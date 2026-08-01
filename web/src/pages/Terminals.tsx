@@ -335,29 +335,33 @@ export default function Terminals() {
         )}
       </div>
 
-      {/* 内容区 */}
+      {/* 内容区：所有主机工作区保持挂载（切换外层 tab 不卸载终端，避免重连），非活动 CSS 隐藏 */}
       <div className="relative min-h-0 flex-1">
-        {!activeTab ? (
+        {outerTabs
+          .filter((t): t is Extract<OuterTab, { kind: 'host' }> => t.kind === 'host')
+          .map((tab) => (
+            <div
+              key={tab.id}
+              className={`absolute inset-0 ${activeOuterId === tab.id ? '' : 'hidden'}`}
+            >
+              {hostLayouts[tab.hostId] ? (
+                <LayoutNodeView node={hostLayouts[tab.hostId]} hostId={tab.hostId} />
+              ) : (
+                <div className="flex h-full items-center justify-center text-[#5a5a5a]">终端已全部关闭</div>
+              )}
+            </div>
+          ))}
+        {/* 工具 tab：编辑器 / 设置 / 传输 / 审计（无长连接，切换即卸载） */}
+        {activeTab?.kind === 'editor' && <EditorTab tab={activeTab} />}
+        {activeTab?.kind === 'settings' && <SettingsTab />}
+        {activeTab?.kind === 'transfer' && <TransferTab />}
+        {activeTab?.kind === 'audit' && <AuditTab />}
+        {/* 空态 */}
+        {!activeTab && (
           <div className="flex h-full flex-col items-center justify-center gap-2 text-[#5a5a5a]">
             <div className="text-4xl">⌨️</div>
             <div>从左侧主机列表选择主机打开终端</div>
           </div>
-        ) : activeTab.kind === 'host' ? (
-          <div className="h-full">
-            {hostLayouts[activeTab.hostId] ? (
-              <LayoutNodeView node={hostLayouts[activeTab.hostId]} hostId={activeTab.hostId} />
-            ) : (
-              <div className="flex h-full items-center justify-center text-[#5a5a5a]">终端已全部关闭</div>
-            )}
-          </div>
-        ) : activeTab.kind === 'editor' ? (
-          <EditorTab tab={activeTab} />
-        ) : activeTab.kind === 'settings' ? (
-          <SettingsTab />
-        ) : activeTab.kind === 'transfer' ? (
-          <TransferTab />
-        ) : (
-          <AuditTab />
         )}
       </div>
     </div>
