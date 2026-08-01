@@ -243,8 +243,8 @@ interface AppState {
   dragTabId: string | null;
   /** 传输记录（上传/下载，供传输管理器） */
   transfers: TransferRec[];
-  /** 快捷命令（状态栏左侧，设置中编辑） */
-  quickCommands: string[];
+  /** 快捷命令（状态栏显示 name，执行 value；设置中编辑） */
+  quickCommands: Array<{ name: string; value: string }>;
   /** 侧边栏是否收起 */
   sidebarCollapsed: boolean;
   /** 当前活动主机的系统指标（状态栏） */
@@ -296,7 +296,7 @@ interface AppState {
   addTransfer: (t: Omit<TransferRec, 'id' | 'ts'>) => number;
   updateTransfer: (id: number, patch: Partial<Pick<TransferRec, 'transferred' | 'status' | 'error' | 'size'>>) => void;
   clearTransfers: () => void;
-  setQuickCommands: (cmds: string[]) => void;
+  setQuickCommands: (cmds: Array<{ name: string; value: string }>) => void;
   setSidebarCollapsed: (v: boolean) => void;
   /** 编辑器保存后失效 SFTP 缓存（hostId + 父目录路径） */
   invalidateSftpPath: (hostId: string, path: string) => void;
@@ -367,14 +367,30 @@ export const useStore = create<AppState>((set, get) => ({
     try {
       const raw = localStorage.getItem('ta-quick-commands');
       if (raw) {
-        const parsed = JSON.parse(raw) as string[];
-        if (Array.isArray(parsed) && parsed.every((c) => typeof c === 'string')) return parsed.slice(0, 20);
+        const parsed = JSON.parse(raw) as unknown;
+        if (Array.isArray(parsed)) {
+          // 兼容旧格式 string[] → { name, value }
+          const cmds = parsed.every((c) => typeof c === 'string')
+            ? (parsed as string[]).map((s) => ({ name: s, value: s }))
+            : (parsed as Array<{ name?: unknown; value?: unknown }>)
+                .filter((c): c is { name: string; value: string } => typeof c?.name === 'string' && typeof c?.value === 'string')
+                .map((c) => ({ name: c.name, value: c.value }));
+          if (cmds.length > 0) return cmds.slice(0, 20);
+        }
       }
     } catch {
       // 忽略
     }
-    return ['ls -la', 'df -h', 'free -h', 'uptime', 'pwd', 'clear'];
+    return [
+      { name: 'ls', value: 'ls -la' },
+      { name: 'df', value: 'df -h' },
+      { name: 'free', value: 'free -h' },
+      { name: 'uptime', value: 'uptime' },
+      { name: 'pwd', value: 'pwd' },
+      { name: 'clear', value: 'clear' },
+    ];
   })(),
+
   sidebarCollapsed: false,
   metrics: null,
   alertThresholds: { cpu: 90, mem: 90, disk: 90 },

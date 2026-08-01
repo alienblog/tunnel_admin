@@ -345,22 +345,24 @@ function StatusBar() {
 
   return (
     <div className="flex h-6 shrink-0 items-center gap-4 bg-[#007acc] px-3 text-[12px] text-white">
-      {/* 左侧：快捷命令 */}
-      <div className="flex min-w-0 items-center gap-1 overflow-x-auto whitespace-nowrap">
-        {quickCommands.map((c) => (
-          <button
-            key={c}
-            title={`在激活终端执行：${c}`}
-            onClick={() => runQuick(c)}
-            className="max-w-36 truncate rounded-sm px-1.5 py-0.5 font-mono text-[11px] text-white/90 hover:bg-white/15"
-          >
-            ⚡ {c}
-          </button>
-        ))}
-      </div>
       <span className="whitespace-nowrap">🤖 agent 会话 {mcpCount}</span>
       <span className="whitespace-nowrap">终端 {tabCount}</span>
       <span className="hidden whitespace-nowrap sm:inline">{label}</span>
+      {/* 快捷命令（name 显示 / value 执行，| 分隔） */}
+      <div className="flex min-w-0 items-center overflow-x-auto whitespace-nowrap">
+        {quickCommands.map((c, i) => (
+          <span key={i} className="flex items-center">
+            {i > 0 && <span className="mx-1 text-white/40">|</span>}
+            <button
+              title={`在激活终端执行：${c.value}`}
+              onClick={() => runQuick(c.value)}
+              className="rounded-sm px-1 py-0.5 text-white/90 hover:bg-white/15"
+            >
+              {c.name}
+            </button>
+          </span>
+        ))}
+      </div>
       <div className="flex-1" />
       {/* 右侧：性能监控 */}
       <div className="flex min-w-0 items-center gap-1.5 whitespace-nowrap">

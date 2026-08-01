@@ -218,30 +218,38 @@ function AlertThresholds() {
   );
 }
 
-/** 快捷命令编辑（状态栏左侧） */
+/** 快捷命令编辑（状态栏显示 name，点击执行 value） */
 function QuickCommands() {
   const quickCommands = useStore((s) => s.quickCommands);
   const setQuickCommands = useStore((s) => s.setQuickCommands);
-  const [draft, setDraft] = useState('');
+  const [name, setName] = useState('');
+  const [value, setValue] = useState('');
 
   const add = (e: React.FormEvent): void => {
     e.preventDefault();
-    const cmd = draft.trim();
+    const cmd = value.trim();
     if (!cmd) return;
-    setQuickCommands([...quickCommands, cmd]);
-    setDraft('');
+    setQuickCommands([...quickCommands, { name: name.trim() || cmd, value: cmd }]);
+    setName('');
+    setValue('');
   };
 
   return (
     <div className="flex flex-col gap-2">
       <div className="text-[11px] text-[#5a5a5a]">
-        状态栏左侧的快捷命令，点击即在当前激活终端执行
+        状态栏显示名称，点击即在当前激活终端执行对应命令
       </div>
       <form onSubmit={add} className="flex gap-1.5">
         <input
-          value={draft}
-          onChange={(e) => setDraft(e.target.value)}
-          placeholder="如 git status"
+          value={name}
+          onChange={(e) => setName(e.target.value)}
+          placeholder="显示名称，如 ls"
+          className={`${inputCls} w-28 shrink-0`}
+        />
+        <input
+          value={value}
+          onChange={(e) => setValue(e.target.value)}
+          placeholder="实际命令，如 ls -la"
           className={`${inputCls} min-w-0 flex-1 font-mono`}
         />
         <button type="submit" className="shrink-0 rounded-sm bg-[#0e639c] px-2.5 py-1 text-[12px] font-medium text-white hover:bg-[#1177bb]">
@@ -251,7 +259,8 @@ function QuickCommands() {
       <div className="flex flex-col gap-1">
         {quickCommands.map((c, i) => (
           <div key={i} className="group flex items-center gap-1.5 rounded-sm px-2 py-1 text-[12px] hover:bg-[#2a2d2e]">
-            <span className="min-w-0 flex-1 truncate font-mono text-[#9cdcfe]">{c}</span>
+            <span className="shrink-0 text-[#cccccc]">{c.name}</span>
+            <span className="min-w-0 flex-1 truncate font-mono text-[#5a5a5a]">{c.value}</span>
             <button
               title="上移"
               onClick={() => {
