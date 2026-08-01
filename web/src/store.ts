@@ -50,6 +50,14 @@ export interface SftpState {
   revealPath: string | null;
 }
 
+/** SFTP 剪贴板：复制/剪切待粘贴项（跨视图保留） */
+export interface SftpClipboard {
+  action: 'copy' | 'cut';
+  path: string;
+  name: string;
+  type: 'dir' | 'file';
+}
+
 export interface SftpCacheEntry {
   items: import('./api').SftpItem[];
   ts: number;
@@ -219,6 +227,8 @@ interface AppState {
   sftpCache: Record<string, SftpCacheEntry>;
   /** SFTP 树展开状态：key = `${hostId}:${path}` → 是否展开 */
   sftpExpanded: Record<string, boolean>;
+  /** SFTP 剪贴板（复制/剪切） */
+  sftpClipboard: SftpClipboard | null;
 
   setAuthed: (v: boolean) => void;
   setView: (v: View) => void;
@@ -237,6 +247,7 @@ interface AppState {
   setForwardList: (list: import('./api').ForwardRec[]) => void;
   setSftpCache: (key: string, items: import('./api').SftpItem[]) => void;
   toggleSftpExpand: (path: string) => void;
+  setSftpClipboard: (c: SftpClipboard | null) => void;
   /** 幂等展开（reveal 用，不翻转） */
   expandSftpPath: (path: string) => void;
   /** 打开主机工作区（外层激活），新建终端（若已有工作区则加入第一个组） */
@@ -299,6 +310,7 @@ export const useStore = create<AppState>((set, get) => ({
   forwardList: [],
   sftpCache: {},
   sftpExpanded: {},
+  sftpClipboard: null,
 
   setAuthed: (v) => set({ authed: v }),
   setView: (v) => set({ view: v }),
@@ -353,6 +365,7 @@ export const useStore = create<AppState>((set, get) => ({
   toggleSftpExpand: (path) =>
     set({ sftpExpanded: { ...get().sftpExpanded, [path]: !get().sftpExpanded[path] } }),
   expandSftpPath: (path) => set({ sftpExpanded: { ...get().sftpExpanded, [path]: true } }),
+  setSftpClipboard: (c) => set({ sftpClipboard: c }),
 
   /** 打开主机工作区（外层激活）；已有工作区则加入第一个组（不分屏） */
   addTab: (host) => {

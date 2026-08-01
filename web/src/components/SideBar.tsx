@@ -225,6 +225,26 @@ function SftpSideBar() {
   const [error, setError] = useState('');
   const [ctx, setCtx] = useState<{ x: number; y: number; item: SftpItem; parentPath: string } | null>(null);
   const fileInput = useRef<HTMLInputElement>(null);
+  const dirInput = useRef<HTMLInputElement>(null);
+  const sftpClipboard = useStore((s) => s.sftpClipboard);
+  const setSftpClipboard = useStore((s) => s.setSftpClipboard);
+  /** 文本预览抽屉 */
+  const [preview, setPreview] = useState<{
+    path: string;
+    name: string;
+    size: number;
+    mtime: string | null;
+    content: string;
+    binary: boolean;
+    truncated: boolean;
+    loading: boolean;
+  } | null>(null);
+  /** 权限弹窗（mode 为八进制数值） */
+  const [chmod, setChmod] = useState<{ path: string; name: string; mode: number } | null>(null);
+  /** 拖拽悬停的目录路径（高亮） */
+  const [dragOver, setDragOver] = useState<string | null>(null);
+  /** 上传进度 */
+  const [uploading, setUploading] = useState<{ name: string; pct: number } | null>(null);
   // 待滚动定位的路径：仅 reveal（初始 home / 终端 pwd）时设置，消费后清空。
   // 展开节点等普通缓存更新不会触发滚动。
   const pendingScrollRef = useRef<string | null>(null);
@@ -325,31 +345,91 @@ function SftpSideBar() {
     toggleExpand(key);
   };
 
-  const upload = async (files: FileList | null): Promise<void> => {
+  const joinPath = (dir: string, name: string): string => dir.replace(/\/+$/, '') + '/' + name;
+
+  /** 操作目标：选中目录优先（树根兜底）——＋文件/＋目录/上传 作用于用户选中的目录 */
+  const opTarget = (): string => {
+    const sel = sftp.selectedPath;
+    if (sel && hostId) {
+      const parent = sel.slice(0, sel.lastIndexOf('/')) || '/';
+      const item = sftpCache[cacheKey(hostId, parent)]?.items.find((it) => joinPath(parent, it.name) === sel);
+      if (item?.type === 'dir') return sel;
+    }
+    return sftp.path;
+  };
+
+  /** 单文件上传（XHR 带进度） */
+  const uploadFile = (f: File, targetPath: string): Promise<void> =>
+    new Promise((resolve, reject) => {
+      const xhr = new XMLHttpRequest();
+      xhr.open('POST', `/api/sftp/upload?hostId=${hostId}&path=${encodeURIComponent(targetPath)}`);
+      xhr.setRequestHeader('Content-Type', 'application/octet-stream');
+      xhr.upload.onprogress = (e) => {
+        if (e.lengthComputable) setUploading({ name: f.name, pct: Math.round((e.loaded / e.total) * 100) });
+      };
+      xhr.onload = () => {
+        if (xhr.status === 200) return resolve();
+        try {
+          reject(new Error(JSON.parse(xhr.responseText).error ?? '上传失败'));
+        } catch {
+          reject(new Error('上传失败'));
+        }
+      };
+      xhr.onerror = () => reject(new Error('网络错误'));
+      xhr.send(f);
+    });
+
+  /** 上传到指定目录（支持拖入的目录：webkitRelativePath 递归建目录） */
+  const uploadTo = async (dirPath: string, files: FileList | File[] | null): Promise<void> => {
     if (!files || files.length === 0 || !hostId) return;
     setError('');
     try {
       for (const f of Array.from(files)) {
-        const target = `${sftp.path.replace(/\/+$/, '')}/${f.name}`;
-        await fetch(`/api/sftp/upload?hostId=${hostId}&path=${encodeURIComponent(target)}`, {
-          method: 'POST',
-          body: f,
-        }).then((res) => {
-          if (!res.ok) return res.json().then((b) => Promise.reject(new Error(b.error ?? '上传失败')));
-        });
+        const rel = (f as File & { webkitRelativePath?: string }).webkitRelativePath;
+        if (rel) {
+          const parts = rel.split('/');
+          parts.pop(); // 去掉文件名
+          let cur = dirPath;
+          for (const seg of parts) {
+            cur = joinPath(cur, seg);
+            try {
+              await api('/api/sftp/mkdir', { method: 'POST', body: JSON.stringify({ hostId: Number(hostId), path: cur }) });
+            } catch {
+              // 已存在则忽略
+            }
+          }
+          await uploadFile(f, joinPath(cur, f.name));
+        } else {
+          await uploadFile(f, joinPath(dirPath, f.name));
+        }
       }
-      await fetchDir(hostId, sftp.path);
+      setUploading(null);
+      await fetchDir(hostId, dirPath);
     } catch (err) {
+      setUploading(null);
       setError((err as Error).message);
     }
   };
 
-  const mkdir = async (): Promise<void> => {
+  const mkdir = async (at?: string): Promise<void> => {
     const name = prompt('目录名称：');
     if (!name || !hostId) return;
+    const target = at ?? opTarget();
     try {
-      await api('/api/sftp/mkdir', { method: 'POST', body: JSON.stringify({ hostId: Number(hostId), path: `${sftp.path.replace(/\/+$/, '')}/${name}` }) });
-      await fetchDir(hostId, sftp.path);
+      await api('/api/sftp/mkdir', { method: 'POST', body: JSON.stringify({ hostId: Number(hostId), path: joinPath(target, name) }) });
+      await fetchDir(hostId, target);
+    } catch (err) {
+      alert((err as Error).message);
+    }
+  };
+
+  const touch = async (at?: string): Promise<void> => {
+    const name = prompt('文件名称：');
+    if (!name || !hostId) return;
+    const target = at ?? opTarget();
+    try {
+      await api('/api/sftp/touch', { method: 'POST', body: JSON.stringify({ hostId: Number(hostId), path: joinPath(target, name) }) });
+      await fetchDir(hostId, target);
     } catch (err) {
       alert((err as Error).message);
     }
@@ -359,8 +439,8 @@ function SftpSideBar() {
     const name = prompt('新名称：', item.name);
     if (!name || !hostId || name === item.name) return;
     try {
-      const from = `${parentPath.replace(/\/+$/, '')}/${item.name}`;
-      const to = `${parentPath.replace(/\/+$/, '')}/${name}`;
+      const from = joinPath(parentPath, item.name);
+      const to = joinPath(parentPath, name);
       await api('/api/sftp/rename', { method: 'POST', body: JSON.stringify({ hostId: Number(hostId), from, to }) });
       await fetchDir(hostId, parentPath);
     } catch (err) {
@@ -372,9 +452,80 @@ function SftpSideBar() {
     const msg = item.type === 'dir' ? `确认递归删除目录「${item.name}」？此操作不可恢复！` : `确认删除「${item.name}」？`;
     if (!confirm(msg) || !hostId) return;
     try {
-      await api(`/api/sftp/rm?hostId=${hostId}&path=${encodeURIComponent(`${parentPath.replace(/\/+$/, '')}/${item.name}`)}&recursive=${item.type === 'dir' ? '1' : '0'}`, { method: 'DELETE' });
+      await api(`/api/sftp/rm?hostId=${hostId}&path=${encodeURIComponent(joinPath(parentPath, item.name))}&recursive=${item.type === 'dir' ? '1' : '0'}`, { method: 'DELETE' });
       await fetchDir(hostId, parentPath);
       setCtx(null);
+    } catch (err) {
+      alert((err as Error).message);
+    }
+  };
+
+  const copyItem = (item: SftpItem, parentPath: string): void => {
+    setSftpClipboard({ action: 'copy', path: joinPath(parentPath, item.name), name: item.name, type: item.type === 'dir' ? 'dir' : 'file' });
+    setCtx(null);
+  };
+
+  const cutItem = (item: SftpItem, parentPath: string): void => {
+    setSftpClipboard({ action: 'cut', path: joinPath(parentPath, item.name), name: item.name, type: item.type === 'dir' ? 'dir' : 'file' });
+    setCtx(null);
+  };
+
+  /** 粘贴：复制（copy）或移动（cut）；目标同名时先确认 */
+  const pasteInto = async (dirPath: string): Promise<void> => {
+    if (!hostId || !sftpClipboard) return;
+    const target = joinPath(dirPath, sftpClipboard.name);
+    if (target === sftpClipboard.path) {
+      setCtx(null);
+      return;
+    }
+    const exists = sftpCache[cacheKey(hostId, dirPath)]?.items.some((it) => it.name === sftpClipboard.name);
+    if (exists && !confirm(`「${sftpClipboard.name}」已存在，${sftpClipboard.action === 'copy' ? '覆盖' : '移动'}？`)) {
+      setCtx(null);
+      return;
+    }
+    try {
+      if (sftpClipboard.action === 'copy') {
+        await api('/api/sftp/copy', { method: 'POST', body: JSON.stringify({ hostId: Number(hostId), from: sftpClipboard.path, to: target }) });
+      } else {
+        await api('/api/sftp/move', { method: 'POST', body: JSON.stringify({ hostId: Number(hostId), from: sftpClipboard.path, to: target }) });
+        const srcParent = sftpClipboard.path.slice(0, sftpClipboard.path.lastIndexOf('/')) || '/';
+        void fetchDir(hostId, srcParent);
+      }
+      setSftpClipboard(null);
+      await fetchDir(hostId, dirPath);
+      setCtx(null);
+    } catch (err) {
+      alert((err as Error).message);
+    }
+  };
+
+  /** 文本预览（前 64KB） */
+  const openPreview = async (item: SftpItem, parentPath: string): Promise<void> => {
+    if (!hostId) return;
+    const path = joinPath(parentPath, item.name);
+    setPreview({ path, name: item.name, size: item.size, mtime: item.mtime, content: '', binary: false, truncated: false, loading: true });
+    try {
+      const r = await api<{ content: string; binary: boolean; truncated: boolean }>(`/api/sftp/read?hostId=${hostId}&path=${encodeURIComponent(path)}`);
+      setPreview((p) => (p && p.path === path ? { ...p, ...r, loading: false } : p));
+    } catch (err) {
+      setPreview((p) => (p && p.path === path ? { ...p, content: `读取失败：${(err as Error).message}`, loading: false } : p));
+    }
+  };
+
+  /** 目录打包下载（tar 流式） */
+  const downloadDir = (item: SftpItem, parentPath: string): void => {
+    if (!hostId) return;
+    window.location.href = `/api/sftp/archive?hostId=${hostId}&path=${encodeURIComponent(joinPath(parentPath, item.name))}`;
+    setCtx(null);
+  };
+
+  const applyChmod = async (): Promise<void> => {
+    if (!hostId || !chmod) return;
+    try {
+      await api('/api/sftp/chmod', { method: 'POST', body: JSON.stringify({ hostId: Number(hostId), path: chmod.path, mode: chmod.mode.toString(8) }) });
+      const parent = chmod.path.slice(0, chmod.path.lastIndexOf('/')) || '/';
+      void fetchDir(hostId, parent);
+      setChmod(null);
     } catch (err) {
       alert((err as Error).message);
     }
@@ -384,7 +535,7 @@ function SftpSideBar() {
   const refreshItem = (item: SftpItem, parentPath: string): void => {
     if (!hostId) return;
     if (item.type === 'dir') {
-      void fetchDir(hostId, `${parentPath.replace(/\/+$/, '')}/${item.name}`);
+      void fetchDir(hostId, joinPath(parentPath, item.name));
     } else {
       void fetchDir(hostId, parentPath);
     }
@@ -424,13 +575,31 @@ function SftpSideBar() {
           <div
             className={`group flex cursor-pointer items-center gap-1 rounded-sm px-2 py-[3px] text-[13px] hover:bg-[#2a2d2e] ${
               sftp.selectedPath === full ? 'bg-[#094771] text-white' : 'text-[#cccccc]'
-            }`}
+            } ${dragOver === full ? 'bg-[#2a4a5e] ring-1 ring-inset ring-[#007acc]' : ''}`}
             style={{ paddingLeft: 8 + depth * 14 }}
             data-sftp-path={full}
+            onClick={() => setSftp({ selectedPath: full })}
             onContextMenu={(e) => {
               e.preventDefault();
               e.stopPropagation();
               setCtx({ x: e.clientX, y: e.clientY, item: it, parentPath: dirPath });
+            }}
+            onDoubleClick={() => {
+              if (!isDir) void openPreview(it, dirPath);
+            }}
+            onDragOver={(e) => {
+              if (!isDir) return;
+              e.preventDefault();
+              e.stopPropagation();
+              setDragOver(full);
+            }}
+            onDragLeave={() => setDragOver((d) => (d === full ? null : d))}
+            onDrop={(e) => {
+              if (!isDir) return;
+              e.preventDefault();
+              e.stopPropagation();
+              setDragOver(null);
+              void uploadTo(full, e.dataTransfer.files);
             }}
           >
             {isDir ? (
@@ -524,20 +693,55 @@ function SftpSideBar() {
           {isPathLoading(sftp.path) && <span className="ml-auto animate-pulse text-[10px] text-[#5a5a5a]">…</span>}
         </div>
         <div className="mt-1 flex gap-1">
-          <input ref={fileInput} type="file" multiple hidden onChange={(e) => void upload(e.target.files)} />
-          <button onClick={() => fileInput.current?.click()} className="rounded-sm border border-[#3c3c3c] px-2 py-0.5 text-[11px] text-[#cccccc] hover:bg-[#3a3d41]">
+          <input ref={fileInput} type="file" multiple hidden onChange={(e) => void uploadTo(opTarget(), e.target.files)} />
+          <input
+            ref={dirInput}
+            type="file"
+            multiple
+            hidden
+            {...({ webkitdirectory: '' } as Record<string, string>)}
+            onChange={(e) => void uploadTo(opTarget(), e.target.files)}
+          />
+          <button onClick={() => fileInput.current?.click()} className="rounded-sm border border-[#3c3c3c] px-2 py-0.5 text-[11px] text-[#cccccc] hover:bg-[#3a3d41]" title={`上传文件到 ${opTarget()}`}>
             ⬆ 上传
           </button>
-          <button onClick={() => void mkdir()} className="rounded-sm border border-[#3c3c3c] px-2 py-0.5 text-[11px] text-[#cccccc] hover:bg-[#3a3d41]">
+          <button onClick={() => dirInput.current?.click()} className="rounded-sm border border-[#3c3c3c] px-2 py-0.5 text-[11px] text-[#cccccc] hover:bg-[#3a3d41]" title={`上传目录到 ${opTarget()}`}>
+            ⬆ 目录
+          </button>
+          <button onClick={() => void mkdir()} className="rounded-sm border border-[#3c3c3c] px-2 py-0.5 text-[11px] text-[#cccccc] hover:bg-[#3a3d41]" title={`在 ${opTarget()} 新建目录`}>
             ＋ 目录
           </button>
+          <button onClick={() => void touch()} className="rounded-sm border border-[#3c3c3c] px-2 py-0.5 text-[11px] text-[#cccccc] hover:bg-[#3a3d41]" title={`在 ${opTarget()} 新建文件`}>
+            ＋ 文件
+          </button>
+          {sftpClipboard && (
+            <button
+              onClick={() => void pasteInto(opTarget())}
+              className="rounded-sm border border-[#007acc] px-2 py-0.5 text-[11px] text-[#4fc1ff] hover:bg-[#094771]"
+              title={`${sftpClipboard.action === 'copy' ? '复制' : '剪切'}「${sftpClipboard.name}」→ 粘贴到 ${opTarget()}`}
+            >
+              📋 粘贴
+            </button>
+          )}
           <button onClick={() => hostId && void fetchDir(hostId, sftp.path)} className="rounded-sm border border-[#3c3c3c] px-2 py-0.5 text-[11px] text-[#cccccc] hover:bg-[#3a3d41]">
             ↻
           </button>
         </div>
       </div>
       {error && <div className="border-t border-[#252526] bg-[#3b1d1d] px-3 py-1 text-[11px] text-[#f14c4c]">{error}</div>}
-      <div className="min-h-0 flex-1 overflow-y-auto pb-2">
+      <div
+        className="min-h-0 flex-1 overflow-y-auto pb-2"
+        onDragOver={(e) => {
+          e.preventDefault();
+          setDragOver(sftp.path);
+        }}
+        onDragLeave={() => setDragOver((d) => (d === sftp.path ? null : d))}
+        onDrop={(e) => {
+          e.preventDefault();
+          setDragOver(null);
+          void uploadTo(sftp.path, e.dataTransfer.files);
+        }}
+      >
         {!hostId ? (
           <div className="px-3 py-2 text-[12px] text-[#5a5a5a]">先在终端打开一个会话</div>
         ) : (
@@ -550,34 +754,118 @@ function SftpSideBar() {
         )}
       </div>
 
+      {/* 上传进度 / 剪贴板提示 */}
+      {uploading && (
+        <div className="border-t border-[#252526] bg-[#1e1e1e] px-3 py-1 text-[11px] text-[#cccccc]">
+          上传中 {uploading.name} {uploading.pct}%
+          <div className="mt-0.5 h-1 w-full bg-[#3a3d41]">
+            <div className="h-1 bg-[#007acc] transition-all" style={{ width: `${uploading.pct}%` }} />
+          </div>
+        </div>
+      )}
+      {sftpClipboard && !uploading && (
+        <div className="border-t border-[#252526] bg-[#1e1e1e] px-3 py-1 text-[11px] text-[#5a5a5a]">
+          {sftpClipboard.action === 'copy' ? '已复制' : '已剪切'}「{sftpClipboard.name}」——右键目标目录粘贴，或点工具栏「📋 粘贴」
+        </div>
+      )}
+
       {/* 右键菜单 */}
       {ctx && (
         <div
           className="fixed z-50 min-w-44 rounded-sm border border-[#3c3c3c] bg-[#252526] py-1 shadow-2xl"
-          style={{ left: Math.min(ctx.x, window.innerWidth - 190), top: Math.min(ctx.y, window.innerHeight - 220) }}
+          style={{ left: Math.min(ctx.x, window.innerWidth - 210), top: Math.min(ctx.y, window.innerHeight - 320) }}
           onContextMenu={(e) => e.preventDefault()}
         >
-          {ctx.item.type === 'dir' ? (
-            <button className={menuItemCls} onClick={() => { onToggleDir(`${ctx.parentPath.replace(/\/+$/, '')}/${ctx.item.name}`); setCtx(null); }}>
-              {expanded[cacheKey(hostId, `${ctx.parentPath.replace(/\/+$/, '')}/${ctx.item.name}`)] ? '▾ 折叠' : '▸ 展开'}
-            </button>
-          ) : (
-            <a
-              className={`${menuItemCls} no-underline`}
-              href={`/api/sftp/download?hostId=${hostId}&path=${encodeURIComponent(`${ctx.parentPath.replace(/\/+$/, '')}/${ctx.item.name}`)}`}
-              download={ctx.item.name}
-              onClick={() => setCtx(null)}
-            >
-              ↓ 下载
-            </a>
+          {ctx.item.type === 'dir' && (
+            <>
+              <button
+                className={menuItemCls}
+                onClick={() => {
+                  onToggleDir(joinPath(ctx.parentPath, ctx.item.name));
+                  setCtx(null);
+                }}
+              >
+                {expanded[cacheKey(hostId, joinPath(ctx.parentPath, ctx.item.name))] ? '▾ 折叠' : '▸ 展开'}
+              </button>
+              <button className={menuItemCls} onClick={() => jumpTo(joinPath(ctx.parentPath, ctx.item.name))}>
+                ⤵ 跳转到此目录
+              </button>
+              <button
+                className={menuItemCls}
+                onClick={() => {
+                  setSftp({ selectedPath: joinPath(ctx.parentPath, ctx.item.name) });
+                  void touch(joinPath(ctx.parentPath, ctx.item.name));
+                  setCtx(null);
+                }}
+              >
+                ＋ 新建文件
+              </button>
+              <button
+                className={menuItemCls}
+                onClick={() => {
+                  setSftp({ selectedPath: joinPath(ctx.parentPath, ctx.item.name) });
+                  fileInput.current?.click();
+                  setCtx(null);
+                }}
+              >
+                ⬆ 上传到此目录
+              </button>
+              <button
+                className={menuItemCls}
+                onClick={() => {
+                  setSftp({ selectedPath: joinPath(ctx.parentPath, ctx.item.name) });
+                  dirInput.current?.click();
+                  setCtx(null);
+                }}
+              >
+                ⬆ 上传目录到此目录
+              </button>
+              {sftpClipboard && (
+                <button
+                  className={menuItemCls}
+                  onClick={() => void pasteInto(joinPath(ctx.parentPath, ctx.item.name))}
+                >
+                  📋 粘贴到此处
+                </button>
+              )}
+              <div className="my-1 border-t border-[#3c3c3c]" />
+            </>
+          )}
+          {ctx.item.type !== 'dir' && (
+            <>
+              <button className={menuItemCls} onClick={() => { void openPreview(ctx.item, ctx.parentPath); setCtx(null); }}>
+                👁 预览
+              </button>
+              <a
+                className={`${menuItemCls} no-underline`}
+                href={`/api/sftp/download?hostId=${hostId}&path=${encodeURIComponent(joinPath(ctx.parentPath, ctx.item.name))}`}
+                download={ctx.item.name}
+                onClick={() => setCtx(null)}
+              >
+                ↓ 下载
+              </a>
+              <div className="my-1 border-t border-[#3c3c3c]" />
+            </>
           )}
           {ctx.item.type === 'dir' && (
-            <button className={menuItemCls} onClick={() => jumpTo(`${ctx.parentPath.replace(/\/+$/, '')}/${ctx.item.name}`)}>
-              ⤵ 跳转到此目录
+            <button className={menuItemCls} onClick={() => downloadDir(ctx.item, ctx.parentPath)}>
+              🗜 打包下载 (tar)
             </button>
           )}
-          <button className={menuItemCls} onClick={() => refreshItem(ctx.item, ctx.parentPath)}>
-            ↻ 刷新{ctx.item.type === 'dir' ? '此文件夹' : '此文件'}
+          <button className={menuItemCls} onClick={() => copyItem(ctx.item, ctx.parentPath)}>
+            📋 复制
+          </button>
+          <button className={menuItemCls} onClick={() => cutItem(ctx.item, ctx.parentPath)}>
+            ✂ 剪切
+          </button>
+          <button
+            className={menuItemCls}
+            onClick={() => {
+              setChmod({ path: joinPath(ctx.parentPath, ctx.item.name), name: ctx.item.name, mode: parseInt(ctx.item.mode, 8) || 0o644 });
+              setCtx(null);
+            }}
+          >
+            🔒 权限…
           </button>
           <div className="my-1 border-t border-[#3c3c3c]" />
           <button className={menuItemCls} onClick={() => { void rename(ctx.item, ctx.parentPath); setCtx(null); }}>
@@ -586,13 +874,110 @@ function SftpSideBar() {
           <button className={`${menuItemCls} text-[#f14c4c]`} onClick={() => void remove(ctx.item, ctx.parentPath)}>
             🗑 删除
           </button>
-          <div className="my-1 border-t border-[#3c3c3c]" />
-          <button className={menuItemCls} onClick={() => { fileInput.current?.click(); setCtx(null); }}>
-            ⬆ 上传到此目录
+          <button className={menuItemCls} onClick={() => refreshItem(ctx.item, ctx.parentPath)}>
+            ↻ 刷新{ctx.item.type === 'dir' ? '此文件夹' : '此文件'}
           </button>
+          <div className="my-1 border-t border-[#3c3c3c]" />
           <button className={menuItemCls} onClick={() => { if (hostId) void fetchDir(hostId, sftp.path); setCtx(null); }}>
             ↻ 刷新当前目录
           </button>
+        </div>
+      )}
+
+      {/* 文本预览抽屉（仅文件） */}
+      {preview && (
+        <div className="fixed bottom-0 left-48 right-0 z-40 flex h-72 flex-col border-t border-[#3c3c3c] bg-[#1e1e1e] shadow-2xl">
+          <div className="flex items-center gap-2 border-b border-[#252526] px-3 py-1.5 text-[12px]">
+            <span className="font-medium text-[#9cdcfe]">{preview.name}</span>
+            <span className="text-[10px] text-[#5a5a5a]">
+              {formatSize(preview.size)}
+              {preview.mtime ? ` · ${new Date(preview.mtime).toLocaleString()}` : ''} · {preview.path}
+            </span>
+            {preview.binary && <span className="rounded-sm bg-[#3b3b1d] px-1.5 py-0.5 text-[10px] text-[#cca700]">二进制文件</span>}
+            {preview.truncated && <span className="rounded-sm bg-[#3b3b1d] px-1.5 py-0.5 text-[10px] text-[#cca700]">仅显示前 64KB</span>}
+            <span className="ml-auto flex items-center gap-1">
+              <button
+                onClick={() => void openPreview({ name: preview.name, type: 'file', size: preview.size, mtime: preview.mtime, mode: '' }, preview.path.slice(0, preview.path.lastIndexOf('/')) || '/')}
+                className="rounded px-1.5 text-[#858585] hover:bg-[#3a3d41] hover:text-white"
+                title="重新加载"
+              >
+                ↻
+              </button>
+              <button onClick={() => setPreview(null)} className="rounded px-1.5 text-[#858585] hover:bg-[#f14c4c]/20 hover:text-[#f14c4c]" title="关闭">
+                ×
+              </button>
+            </span>
+          </div>
+          <pre className="min-h-0 flex-1 overflow-auto whitespace-pre-wrap break-all p-3 font-mono text-[12px] leading-relaxed text-[#cccccc]">
+            {preview.loading ? '加载中…' : preview.content}
+          </pre>
+        </div>
+      )}
+
+      {/* 权限弹窗 */}
+      {chmod && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60" onClick={() => setChmod(null)}>
+          <div
+            className="w-80 rounded-sm border border-[#3c3c3c] bg-[#252526] p-4"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <h3 className="mb-1 text-[13px] font-semibold text-[#cccccc]">权限：{chmod.name}</h3>
+            <div className="mb-2 text-[10px] text-[#5a5a5a]">{chmod.path}</div>
+            <div className="mb-3 grid grid-cols-3 gap-2">
+              {(
+                [
+                  ['属主', 0],
+                  ['组', 1],
+                  ['其他', 2],
+                ] as const
+              ).map(([label, idx]) => (
+                <div key={label} className="rounded-sm border border-[#3c3c3c] p-2">
+                  <div className="mb-1 text-[11px] text-[#858585]">{label}</div>
+                  <div className="flex flex-col gap-1">
+                    {(
+                      [
+                        ['读', 4],
+                        ['写', 2],
+                        ['执行', 1],
+                      ] as const
+                    ).map(([rlabel, v]) => {
+                      const bit = v * 8 ** (2 - idx);
+                      return (
+                        <label key={rlabel} className="flex cursor-pointer items-center gap-1.5 text-[12px] text-[#cccccc]">
+                          <input
+                            type="checkbox"
+                            checked={(chmod.mode & bit) !== 0}
+                            onChange={() => setChmod((c) => (c ? { ...c, mode: c.mode ^ bit } : c))}
+                            className="accent-[#007acc]"
+                          />
+                          {rlabel}
+                        </label>
+                      );
+                    })}
+                  </div>
+                </div>
+              ))}
+            </div>
+            <div className="mb-3 flex items-center gap-2">
+              <span className="text-[11px] text-[#858585]">数字</span>
+              <input
+                value={chmod.mode.toString(8)}
+                onChange={(e) => {
+                  const n = parseInt(e.target.value, 8);
+                  if (!Number.isNaN(n) && n >= 0 && n <= 0o7777) setChmod((c) => (c ? { ...c, mode: n } : c));
+                }}
+                className="w-16 rounded-sm border border-[#3c3c3c] bg-[#1e1e1e] px-1.5 py-0.5 text-[12px] font-mono text-[#cccccc] outline-none focus:border-[#007acc]"
+              />
+            </div>
+            <div className="flex justify-end gap-2">
+              <button onClick={() => setChmod(null)} className="rounded-sm border border-[#3c3c3c] px-3 py-1 text-[12px] text-[#cccccc] hover:bg-[#3a3d41]">
+                取消
+              </button>
+              <button onClick={() => void applyChmod()} className="rounded-sm bg-[#0e639c] px-3 py-1 text-[12px] font-medium text-white hover:bg-[#1177bb]">
+                应用
+              </button>
+            </div>
+          </div>
         </div>
       )}
     </div>
