@@ -106,6 +106,14 @@ export function registerWs(app: FastifyInstance, config: Config, manager: SshMan
         eventBus.broadcast({ type: 'terminal:exit', streamId: rec.id });
       });
       rec.channel.on('error', () => rec.channel.end());
+      // SSH 连接层断开（主机重启 / 网络中断）：带 reason 广播，前端据此自动重连。
+      // 注意：channel close 可能先于 client close 触发（streams 已删），此处不做存在性检查，
+      // 由前端对「无 reason exit」延迟处理来合并两个事件。
+      const onConnLost = (): void => {
+        eventBus.broadcast({ type: 'terminal:exit', streamId: rec.id, reason: 'connection-lost' });
+      };
+      rec.session.client.once('error', onConnLost);
+      rec.session.client.once('close', onConnLost);
     }
 
     rawSocket.on('message', async (data: unknown) => {

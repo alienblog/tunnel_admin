@@ -87,6 +87,12 @@ export default function TerminalView({ tab }: { tab: TerminalTab }) {
   // 连接状态徽标（不写入终端文本）：connecting 常驻 / connected 2s 淡出 / error、closed 常驻
   const [connBadge, setConnBadge] = useState<{ kind: 'connecting' | 'connected' | 'error' | 'closed'; text: string } | null>(null);
   const badgeTimerRef = useRef<number | undefined>(undefined);
+  // 自动重连状态（SSH 断开/连接失败后定时重试）
+  const reconnectTimerRef = useRef<number | undefined>(undefined);
+  const reconnectAttemptRef = useRef(0);
+  const shouldReconnectRef = useRef(false);
+  /** exit 无 reason 时的延迟确认计时（等待 connection-lost 升级） */
+  const exitTimerRef = useRef<number | undefined>(undefined);
   const pushToast = useStore((s) => s.pushToast);
 
   const isActive = activeTabId === tab.id;
@@ -292,6 +298,33 @@ export default function TerminalView({ tab }: { tab: TerminalTab }) {
     });
 
     // 服务端终端流 → xterm
+    // 自动重连：SSH 断开/连接失败后定时重试 open（同一 TerminalView 实例，xterm 内容保留）
+    const stopReconnect = (): void => {
+      shouldReconnectRef.current = false;
+      reconnectAttemptRef.current = 0;
+      window.clearTimeout(reconnectTimerRef.current);
+    };
+    const scheduleReconnect = (): void => {
+      if (!shouldReconnectRef.current) return;
+      reconnectAttemptRef.current += 1;
+      // 指数退避：5s → 10s → 20s → 30s 封顶
+      const delay = Math.min(5000 * 2 ** (reconnectAttemptRef.current - 1), 30000);
+      setConnBadge({ kind: 'connecting', text: `连接断开，${Math.round(delay / 1000)}s 后重连（第 ${reconnectAttemptRef.current} 次）` });
+      window.clearTimeout(reconnectTimerRef.current);
+      reconnectTimerRef.current = window.setTimeout(() => {
+        if (!shouldReconnectRef.current) return;
+        streamIdRef.current = null;
+        ws.send({
+          type: 'terminal:open',
+          reqId: tab.id,
+          hostId: tab.hostId,
+          cols: term.cols,
+          rows: term.rows,
+          tmuxId: tab.id,
+        });
+      }, delay);
+    };
+
     const offData = ws.on('terminal:data', (e) => {
       if (e.streamId !== streamIdRef.current) return;
       term.write(e.data);
@@ -319,17 +352,34 @@ export default function TerminalView({ tab }: { tab: TerminalTab }) {
 
     const offExit = ws.on('terminal:exit', (e) => {
       if (e.streamId === streamIdRef.current) {
-        setTabStatus(tab.id, { status: 'closed' });
-        setConnBadge({ kind: 'closed', text: '会话已关闭' });
-        pushToast({ hostName: tab.hostName, kind: 'warning', text: '终端会话已关闭' });
+        if (e.reason === 'connection-lost') {
+          // SSH 连接断开（如主机重启）：自动重连，终端内容保留（agent 会话由 MCP 管理，不重连）
+          window.clearTimeout(exitTimerRef.current);
+          shouldReconnectRef.current = true;
+          setTabStatus(tab.id, { status: 'closed' });
+          pushToast({ hostName: tab.hostName, kind: 'warning', text: 'SSH 连接断开，正在自动重连…' });
+          scheduleReconnect();
+          return;
+        }
+        // 无 reason 的 exit（channel close）：延迟确认——连接断开时紧随其后的
+        // connection-lost 事件会接管；正常退出（shell 关闭）则延迟后按关闭处理
+        window.clearTimeout(exitTimerRef.current);
+        exitTimerRef.current = window.setTimeout(() => {
+          if (shouldReconnectRef.current) return;
+          setTabStatus(tab.id, { status: 'closed' });
+          setConnBadge({ kind: 'closed', text: '会话已关闭' });
+          pushToast({ hostName: tab.hostName, kind: 'warning', text: '终端会话已关闭' });
+        }, 300);
       }
     });
     const offReady = ws.on('terminal:ready', (e) => {
       if (e.reqId !== tab.id) return;
       streamIdRef.current = e.streamId;
       setTabStatus(tab.id, { status: 'connected', streamId: e.streamId });
-      // 已连接徽标 2 秒后淡出
-      setConnBadge({ kind: 'connected', text: '已连接' });
+      const wasReconnect = reconnectAttemptRef.current > 0;
+      stopReconnect();
+      // 已连接徽标 2 秒后淡出（重连成功时显示「已重连」）
+      setConnBadge({ kind: 'connected', text: wasReconnect ? '已重连' : '已连接' });
       window.clearTimeout(badgeTimerRef.current);
       badgeTimerRef.current = window.setTimeout(() => setConnBadge(null), 2000);
     });
@@ -337,7 +387,12 @@ export default function TerminalView({ tab }: { tab: TerminalTab }) {
       if (e.reqId !== undefined && e.reqId !== tab.id) return;
       setTabStatus(tab.id, { status: 'error', error: e.message });
       setConnBadge({ kind: 'error', text: e.message });
-      pushToast({ hostName: tab.hostName, kind: 'error', text: e.message });
+      if (!shouldReconnectRef.current && !isAgent) {
+        // 连接失败（主机不可达/正在重启）：进入自动重连
+        shouldReconnectRef.current = true;
+        pushToast({ hostName: tab.hostName, kind: 'warning', text: '连接失败，正在自动重连…' });
+      }
+      scheduleReconnect();
     });
     const offLog = ws.on('terminal:log', (e) => {
       if (e.reqId !== tab.id) return;
@@ -407,6 +462,9 @@ export default function TerminalView({ tab }: { tab: TerminalTab }) {
       clearTimeout(pwdTimerRef.current);
       clearTimeout(autoTimerRef.current);
       window.clearTimeout(badgeTimerRef.current);
+      window.clearTimeout(reconnectTimerRef.current);
+      window.clearTimeout(exitTimerRef.current);
+      shouldReconnectRef.current = false;
       closeCompletion();
       if (streamIdRef.current) {
         const unloading = (window as unknown as { __taUnloading?: boolean }).__taUnloading;
