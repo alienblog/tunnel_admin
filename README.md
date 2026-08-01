@@ -1,0 +1,106 @@
+# TunnelAdmin
+
+基于 Web 的 SSH 连接管理器 + MCP Server。浏览器里管理主机、开终端、传文件、建隧道；AI Agent 通过 MCP 协议（Streamable HTTP）直接操作你的服务器——**agent 首次连接每台主机都需要你在网页上确认**（human-in-the-loop 审批），批准后可选择「始终信任」免审批直连。
+
+## 功能
+
+| 模块 | 能力 |
+|---|---|
+| Web 终端 | 多标签、断线重连、尺寸自适应、暗色主题、密码/私钥认证、跳板机链 |
+| 主机管理 | 分组/标签/备注、凭据 AES-256-GCM 加密落盘、每主机信任开关 |
+| SFTP 文件管理 | 目录浏览、拖拽上传（流式分块）、下载、重命名、递归删除 |
+| 端口转发 | 远程转发为主：把目标内网端口暴露到部署服务器端口 |
+| MCP Server | `ssh_list_hosts` / `ssh_connect` / `ssh_exec` / `ssh_read_file` / `ssh_write_file` / `ssh_list_dir` / `ssh_stat` / `ssh_session_info` / `ssh_disconnect` / `ssh_job_status`，会话保持 cwd，命令超时与输出截断 |
+| 共享会话 | MCP 建立的连接实时出现在 Web 终端（🤖 标签），点击即可在同一连接上打开自己的终端同时操作；agent 每条命令与输出实时镜像到该视图 |
+| 连接审批 | agent 连接请求实时推送 Web 弹窗，批准/拒绝/记住信任，60s 超时自动拒绝 |
+| 审计日志 | MCP 命令全量记录（命令/退出码/耗时），Web 终端记录会话级 |
+
+## 技术栈
+
+- 后端：Node.js 22+ / TypeScript / Fastify 5 / ssh2 / better-sqlite3 / @modelcontextprotocol/sdk
+- 前端：React 19 / Vite / xterm.js (@xterm/xterm 6) / Tailwind 4 / zustand
+- 安全：密码登录（httpOnly cookie）、MCP Bearer token、AES-256-GCM 凭据加密、主密钥 0600 文件
+
+## 快速开始
+
+```bash
+npm install
+
+# 开发模式（server :8080 + web :5173 热更新）
+npm run dev
+
+# 生产构建并启动（server 托管 web/dist）
+npm run build
+npm start
+```
+
+首次启动会在 `data/` 下生成：
+- `master.key` — AES 主密钥（0600）
+- `password.hash` — Web 登录密码哈希；**初始密码打印在启动日志中**
+
+### 环境变量
+
+| 变量 | 默认 | 说明 |
+|---|---|---|
+| `PORT` | 8080 | 监听端口 |
+| `HOST` | 0.0.0.0 | 监听地址 |
+| `TUNNELADMIN_PASSWORD` | 自动生成 | Web 登录密码 |
+| `TUNNELADMIN_MASTER_KEY` | 自动生成 | 64 位 hex 主密钥（覆盖密钥文件） |
+| `TUNNELADMIN_DATA_DIR` | ./data | 数据目录 |
+| `TUNNELADMIN_APPROVAL_TIMEOUT` | 60000 | 审批超时（ms） |
+| `TUNNELADMIN_MCP_TIMEOUT` | 30000 | MCP 命令默认超时（ms） |
+| `TUNNELADMIN_MCP_OUTPUT_LIMIT` | 65536 | MCP 命令输出截断（字节） |
+
+## MCP 接入 AI Agent
+
+1. Web 界面 → 设置 → 新建 Token
+2. Agent 配置示例（Claude Code / Cursor 的 `.mcp.json`）：
+
+```json
+{
+  "mcpServers": {
+    "tunneladmin": {
+      "type": "http",
+      "url": "https://你的服务器:8080/mcp",
+      "headers": { "Authorization": "Bearer ta_xxxxx" }
+    }
+  }
+}
+```
+
+3. Agent 调用 `ssh_connect` 时，你的浏览器会弹出确认框；批准后返回 `sessionId`，后续 `ssh_exec` / 文件操作复用该会话并保持工作目录。
+
+## 安全说明
+
+- 公网部署务必置于 HTTPS 反向代理后（如 Caddy：`caddy reverse-proxy --from your.domain --to :8080`）
+- MCP endpoint 强制 Bearer token 认证
+- 凭据全量加密落盘；主密钥文件权限 0600，建议备份
+- 单用户设计；多用户/RBAC 不在当前范围
+
+## 目录结构
+
+```
+server/src/
+  index.ts          入口：Fastify + WS + MCP + 静态托管
+  config.ts         配置加载 / 密码与 cookie 签名
+  crypto.ts         AES-256-GCM
+  db.ts             SQLite schema
+  approval.ts       agent 连接审批服务
+  events.ts         WebSocket 事件总线
+  ws.ts             终端桥（xterm ↔ ssh2 流）
+  ssh/manager.ts    连接池（跳板机链、keepalive）
+  routes/           auth / hosts / tokens / misc / sftp / forward
+  mcp/              MCP server（Streamable HTTP 无状态模式）+ 工具集
+web/src/
+  pages/            终端 / 主机 / 文件 / 转发 / 审计 / 设置
+  components/       TerminalView (xterm) / ApprovalModal
+  ws.ts             事件总线客户端（自动重连）
+```
+
+## 设计要点
+
+- **Web 与 MCP 共享连接核心**：连接配置、凭据解密、跳板机逻辑只有一份
+- **MCP 无状态模式**：每个请求新建 Server + transport（SDK Protocol 单实例只支持单 transport），会话状态存进程级共享 Map
+- **审批链路**：MCP 请求挂起 → WS 推送弹窗 → 用户批准 → 连接建立，超时自动拒绝
+- **共享会话**：同一 SSH 连接可开多 channel——MCP 的 exec 与用户在 Web 附加的交互 shell 并行（ssh2 多 channel），agent 活动经 `exec:activity` 事件实时镜像；终端协议按 `streamId` 区分多视图
+- **远程转发为主**：部署在服务器上时「本地转发」的端口开在服务器上浏览器够不着，故主推远程转发；本地转发仅服务端进程可用
