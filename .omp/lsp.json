@@ -1,0 +1,14 @@
+{
+  "servers": {
+    "typescript-language-server": {
+      "command": "/home/alien/.local/node-v22.23.2-linux-x64/bin/node",
+      "args": [
+        "/home/alien/sources/tunneladmin/node_modules/typescript-language-server/lib/cli.mjs",
+        "--stdio"
+      ],
+      "fileTypes": [".ts", ".tsx", ".js", ".jsx", ".mts", ".cts"],
+      "rootMarkers": ["package.json", "tsconfig.json", ".git"]
+    }
+  },
+  "idleTimeoutMs": 600000
+}

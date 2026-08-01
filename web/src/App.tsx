@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { api, type ApprovalInfo } from './api';
 import { ws, type SessionInfo } from './ws';
-import { useStore, type HostMetrics, type Toast, type View } from './store';
+import { useStore, type HostMetrics, type OuterTab, type Toast, type View } from './store';
 import SideBar from './components/SideBar';
 import Login from './pages/Login';
 import Terminals from './pages/Terminals';
@@ -12,8 +12,13 @@ const NAV: Array<{ view: View; label: string; icon: string }> = [
   { view: 'hosts', label: '主机', icon: 'server' },
   { view: 'sftp', label: '文件', icon: 'folder' },
   { view: 'forward', label: '转发', icon: 'forward' },
-  { view: 'audit', label: '审计', icon: 'audit' },
-  { view: 'settings', label: '设置', icon: 'settings' },
+];
+
+/** 底部工具按钮：点击在外层打开工具 tab */
+const TOOLS: Array<{ id: string; label: string; icon: string }> = [
+  { id: 'transfer', label: '传输', icon: 'transfer' },
+  { id: 'audit', label: '审计', icon: 'audit' },
+  { id: 'settings', label: '设置', icon: 'settings' },
 ];
 
 const ICONS: Record<string, React.ReactNode> = {
@@ -47,24 +52,73 @@ const ICONS: Record<string, React.ReactNode> = {
       <path d="M6.5 1.5a.75.75 0 01.75-.75h1.5a.75.75 0 01.75.75V2.9a4.25 4.25 0 011.8 1.04l1.46-.6a.75.75 0 01.97.34l.75 1.3a.75.75 0 01-.25 1L13.5 7a4.3 4.3 0 010 2l1.23.96a.75.75 0 01.25 1l-.75 1.3a.75.75 0 01-.97.34l-1.46-.6a4.25 4.25 0 01-1.8 1.04v1.76a.75.75 0 01-.75.75h-1.5a.75.75 0 01-.75-.75v-1.76a4.25 4.25 0 01-1.8-1.04l-1.46.6a.75.75 0 01-.97-.34l-.75-1.3a.75.75 0 01.25-1L2.5 9a4.3 4.3 0 010-2L1.27 6.04a.75.75 0 01-.25-1l.75-1.3a.75.75 0 01.97-.34l1.46.6a4.25 4.25 0 011.8-1.04V1.5zM8 5.25A2.75 2.75 0 108 10.75 2.75 2.75 0 008 5.25z" />
     </svg>
   ),
+  transfer: (
+    <svg viewBox="0 0 16 16" className="h-5 w-5" fill="currentColor">
+      <path d="M8 1.5a.75.75 0 01.75.75v9.19l2.47-2.47a.75.75 0 111.06 1.06l-3.75 3.75a.75.75 0 01-1.06 0l-3.75-3.75a.75.75 0 111.06-1.06l2.47 2.47V2.25A.75.75 0 018 1.5z" />
+    </svg>
+  ),
 };
 
-function ActivityBar({ view, setView }: { view: View; setView: (v: View) => void }) {  return (
+function ActivityBar({
+  view,
+  setView,
+  collapsed,
+  setCollapsed,
+}: {
+  view: View;
+  setView: (v: View) => void;
+  collapsed: boolean;
+  setCollapsed: (v: boolean) => void;
+}) {
+  const openOuterTab = useStore((s) => s.openOuterTab);
+  const activeOuterId = useStore((s) => s.activeOuterId);
+
+  return (
     <div className="flex w-12 shrink-0 flex-col items-center bg-[#333333] py-1">
       {NAV.map((n) => (
         <button
           key={n.view}
           title={n.label}
-          onClick={() => setView(n.view)}
+          onClick={() => {
+            // 点击当前视图图标：收起/展开侧边栏（VSCode 行为）
+            if (view === n.view && !collapsed) {
+              setCollapsed(true);
+            } else {
+              setCollapsed(false);
+              setView(n.view);
+            }
+          }}
           className={`relative flex h-12 w-12 items-center justify-center transition-colors ${
-            view === n.view ? 'text-white' : 'text-[#858585] hover:text-white'
+            view === n.view && !collapsed ? 'text-white' : 'text-[#858585] hover:text-white'
           }`}
         >
-          {view === n.view && <span className="absolute top-0 left-0 h-full w-0.5 bg-white" />}
+          {view === n.view && !collapsed && <span className="absolute top-0 left-0 h-full w-0.5 bg-white" />}
           {ICONS[n.icon]}
         </button>
       ))}
       <div className="flex-1" />
+      {TOOLS.map((t) => {
+        const tab: OuterTab =
+          t.id === 'transfer'
+            ? { kind: 'transfer', id: 'transfer' }
+            : t.id === 'audit'
+              ? { kind: 'audit', id: 'audit' }
+              : { kind: 'settings', id: 'settings' };
+        const active = activeOuterId === t.id;
+        return (
+          <button
+            key={t.id}
+            title={t.label}
+            onClick={() => openOuterTab(tab)}
+            className={`relative flex h-12 w-12 items-center justify-center transition-colors ${
+              active ? 'text-white' : 'text-[#858585] hover:text-white'
+            }`}
+          >
+            {active && <span className="absolute top-0 left-0 h-full w-0.5 bg-white" />}
+            {ICONS[t.icon]}
+          </button>
+        );
+      })}
       <button
         title="退出登录"
         onClick={() => {
@@ -274,16 +328,44 @@ function StatusBar() {
   const mcpCount = useStore((s) => s.mcpSessions.length);
   const tabCount = useStore((s) => s.tabs.length);
   const view = useStore((s) => s.view);
+  const quickCommands = useStore((s) => s.quickCommands);
+  const pushToast = useStore((s) => s.pushToast);
   const label = NAV.find((n) => n.view === view)?.label ?? '';
+
+  /** 在激活终端执行快捷命令 */
+  const runQuick = (cmd: string): void => {
+    const st = useStore.getState();
+    const tab = st.tabs.find((t) => t.id === st.activeTabId);
+    if (!tab?.streamId) {
+      pushToast({ hostName: '快捷命令', kind: 'warning', text: '没有可执行命令的激活终端' });
+      return;
+    }
+    ws.send({ type: 'terminal:input', streamId: tab.streamId, data: `${cmd}\r` });
+  };
+
   return (
     <div className="flex h-6 shrink-0 items-center gap-4 bg-[#007acc] px-3 text-[12px] text-white">
+      {/* 左侧：快捷命令 */}
+      <div className="flex min-w-0 items-center gap-1 overflow-x-auto whitespace-nowrap">
+        {quickCommands.map((c) => (
+          <button
+            key={c}
+            title={`在激活终端执行：${c}`}
+            onClick={() => runQuick(c)}
+            className="max-w-36 truncate rounded-sm px-1.5 py-0.5 font-mono text-[11px] text-white/90 hover:bg-white/15"
+          >
+            ⚡ {c}
+          </button>
+        ))}
+      </div>
       <span className="whitespace-nowrap">🤖 agent 会话 {mcpCount}</span>
       <span className="whitespace-nowrap">终端 {tabCount}</span>
       <span className="hidden whitespace-nowrap sm:inline">{label}</span>
+      <div className="flex-1" />
+      {/* 右侧：性能监控 */}
       <div className="flex min-w-0 items-center gap-1.5 whitespace-nowrap">
         <MetricsBar />
       </div>
-      <div className="flex-1" />
       <span className="hidden whitespace-nowrap md:inline">MCP: {location.origin}/mcp</span>
       <span className="whitespace-nowrap">v0.1.0</span>
     </div>
@@ -294,6 +376,8 @@ export default function App() {
   const authed = useStore((s) => s.authed);
   const view = useStore((s) => s.view);
   const setView = useStore((s) => s.setView);
+  const sidebarCollapsed = useStore((s) => s.sidebarCollapsed);
+  const setSidebarCollapsed = useStore((s) => s.setSidebarCollapsed);
   const [checking, setChecking] = useState(true);
 
   useEffect(() => {
@@ -399,8 +483,13 @@ export default function App() {
   return (
     <div className="flex h-screen flex-col overflow-hidden bg-[#1e1e1e] text-[#cccccc]">
       <div className="flex min-h-0 flex-1">
-        <ActivityBar view={view} setView={setView} />
-        <SideBar view={view} />
+        <ActivityBar
+          view={view}
+          setView={setView}
+          collapsed={sidebarCollapsed}
+          setCollapsed={setSidebarCollapsed}
+        />
+        {!sidebarCollapsed && <SideBar view={view} />}
         {/* 编辑区：始终显示终端标签组，不随活动栏切换（VSCode 行为） */}
         <main className="min-w-0 flex-1">
           <Terminals />

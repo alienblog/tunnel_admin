@@ -2,7 +2,34 @@ import { create } from 'zustand';
 import { api, type ApprovalInfo, type Host } from './api';
 import type { SessionInfo } from './ws';
 
-export type View = 'terminals' | 'hosts' | 'sftp' | 'forward' | 'audit' | 'settings';
+export type View = 'terminals' | 'hosts' | 'sftp' | 'forward';
+
+/**
+ * 外层 tab（VSCode 编辑器组模型的外层）：
+ * - host：主机工作区（含内层布局树）
+ * - editor：文件编辑器（双击文件打开）
+ * - settings / transfer / audit：单例工具页
+ */
+export type OuterTab =
+  | { kind: 'host'; id: string; hostId: string }
+  | { kind: 'editor'; id: string; hostId: string; hostName: string; path: string; name: string }
+  | { kind: 'settings'; id: 'settings' }
+  | { kind: 'transfer'; id: 'transfer' }
+  | { kind: 'audit'; id: 'audit' };
+
+/** 传输记录（上传/下载，供传输管理器展示） */
+export interface TransferRec {
+  id: number;
+  direction: 'up' | 'down';
+  name: string;
+  path: string;
+  hostName: string;
+  size: number;
+  transferred: number;
+  status: 'running' | 'done' | 'error';
+  error?: string;
+  ts: number;
+}
 
 export interface TerminalTab {
   id: string;
@@ -206,12 +233,20 @@ interface AppState {
   tabs: TerminalTab[];
   /** 每主机的布局树（group/split） */
   hostLayouts: Record<string, LayoutNode>;
-  /** 外层活动主机（编辑区显示其布局） */
-  outerHost: string | null;
+  /** 外层 tab 列表（主机工作区 / 编辑器 / 设置 / 传输 / 审计） */
+  outerTabs: OuterTab[];
+  /** 外层活动 tab id */
+  activeOuterId: string | null;
   /** 全局焦点终端（派生维护，供 SFTP 跟随 / 后台通知判断） */
   activeTabId: string | null;
   /** 拖拽中的 tab */
   dragTabId: string | null;
+  /** 传输记录（上传/下载，供传输管理器） */
+  transfers: TransferRec[];
+  /** 快捷命令（状态栏左侧，设置中编辑） */
+  quickCommands: string[];
+  /** 侧边栏是否收起 */
+  sidebarCollapsed: boolean;
   /** 当前活动主机的系统指标（状态栏） */
   metrics: HostMetrics | null;
   /** 告警阈值（百分比） */
@@ -250,6 +285,21 @@ interface AppState {
   setSftpClipboard: (c: SftpClipboard | null) => void;
   /** 幂等展开（reveal 用，不翻转） */
   expandSftpPath: (path: string) => void;
+  /** 打开/激活主机外层 tab（终端相关动作内部调用） */
+  openHostOuter: (hostId: string) => void;
+  /** 打开外层 tab（editor 同名文件复用；settings/transfer/audit 单例） */
+  openOuterTab: (tab: OuterTab) => void;
+  /** 关闭外层 tab（host 关闭时同时关闭其全部终端） */
+  closeOuterTab: (id: string) => void;
+  setActiveOuter: (id: string | null) => void;
+  /** 记录传输（自动分配 id，上限 100 条） */
+  addTransfer: (t: Omit<TransferRec, 'id' | 'ts'>) => number;
+  updateTransfer: (id: number, patch: Partial<Pick<TransferRec, 'transferred' | 'status' | 'error' | 'size'>>) => void;
+  clearTransfers: () => void;
+  setQuickCommands: (cmds: string[]) => void;
+  setSidebarCollapsed: (v: boolean) => void;
+  /** 编辑器保存后失效 SFTP 缓存（hostId + 父目录路径） */
+  invalidateSftpPath: (hostId: string, path: string) => void;
   /** 打开主机工作区（外层激活），新建终端（若已有工作区则加入第一个组） */
   addTab: (host: Host) => string;
   /** 在指定组的 tab 栏加号：组内新建终端（不分屏） */
@@ -297,9 +347,35 @@ export const useStore = create<AppState>((set, get) => ({
   mcpSessions: [],
   tabs: [],
   hostLayouts: {},
-  outerHost: null,
+  outerTabs: [],
+  activeOuterId: null,
   activeTabId: null,
   dragTabId: null,
+  transfers: (() => {
+    try {
+      const raw = localStorage.getItem('ta-transfers');
+      if (raw) {
+        const parsed = JSON.parse(raw) as TransferRec[];
+        if (Array.isArray(parsed)) return parsed;
+      }
+    } catch {
+      // 忽略
+    }
+    return [];
+  })(),
+  quickCommands: (() => {
+    try {
+      const raw = localStorage.getItem('ta-quick-commands');
+      if (raw) {
+        const parsed = JSON.parse(raw) as string[];
+        if (Array.isArray(parsed) && parsed.every((c) => typeof c === 'string')) return parsed.slice(0, 20);
+      }
+    } catch {
+      // 忽略
+    }
+    return ['ls -la', 'df -h', 'free -h', 'uptime', 'pwd', 'clear'];
+  })(),
+  sidebarCollapsed: false,
   metrics: null,
   alertThresholds: { cpu: 90, mem: 90, disk: 90 },
   terminalTheme: 'dark-plus',
@@ -314,6 +390,91 @@ export const useStore = create<AppState>((set, get) => ({
 
   setAuthed: (v) => set({ authed: v }),
   setView: (v) => set({ view: v }),
+
+  openHostOuter: (hostId) => {
+    const tabs = get().outerTabs;
+    const exists = tabs.some((t) => t.kind === 'host' && t.hostId === hostId);
+    set({
+      outerTabs: exists ? tabs : [...tabs, { kind: 'host', id: hostId, hostId }],
+      activeOuterId: hostId,
+    });
+  },
+
+  openOuterTab: (tab) => {
+    const exists = get().outerTabs.some((t) => t.id === tab.id);
+    set({
+      outerTabs: exists ? get().outerTabs : [...get().outerTabs, tab],
+      activeOuterId: tab.id,
+    });
+  },
+
+  closeOuterTab: (id) => {
+    const tab = get().outerTabs.find((t) => t.id === id);
+    if (!tab) return;
+    if (tab.kind === 'host') {
+      get().closeHostWorkspace(tab.hostId);
+      return;
+    }
+    const outerTabs = get().outerTabs.filter((t) => t.id !== id);
+    const activeOuterId = get().activeOuterId === id ? (outerTabs[outerTabs.length - 1]?.id ?? null) : get().activeOuterId;
+    set({ outerTabs, activeOuterId });
+  },
+
+  setActiveOuter: (id) => set({ activeOuterId: id }),
+
+  addTransfer: (t) => {
+    const rec: TransferRec = { ...t, id: Date.now() + Math.floor(Math.random() * 1000), ts: Date.now() };
+    const transfers = [...get().transfers, rec].slice(-100);
+    try {
+      localStorage.setItem('ta-transfers', JSON.stringify(transfers.filter((x) => x.status !== 'running')));
+    } catch {
+      // 忽略
+    }
+    set({ transfers });
+    return rec.id;
+  },
+
+  updateTransfer: (id, patch) => {
+    const transfers = get().transfers.map((t) => (t.id === id ? { ...t, ...patch } : t));
+    set({ transfers });
+    if (patch.status && patch.status !== 'running') {
+      try {
+        localStorage.setItem('ta-transfers', JSON.stringify(transfers.filter((x) => x.status !== 'running')));
+      } catch {
+        // 忽略
+      }
+    }
+  },
+
+  clearTransfers: () => {
+    set({ transfers: get().transfers.filter((t) => t.status === 'running') });
+    try {
+      localStorage.setItem('ta-transfers', JSON.stringify(get().transfers.filter((x) => x.status !== 'running')));
+    } catch {
+      // 忽略
+    }
+  },
+
+  setQuickCommands: (cmds) => {
+    set({ quickCommands: cmds.slice(0, 20) });
+    try {
+      localStorage.setItem('ta-quick-commands', JSON.stringify(cmds.slice(0, 20)));
+    } catch {
+      // 忽略
+    }
+  },
+
+  setSidebarCollapsed: (v) => set({ sidebarCollapsed: v }),
+
+  invalidateSftpPath: (hostId, path) => {
+    const prefix = `${hostId}:`;
+    const key = `${hostId}:${path}`;
+    const next = { ...get().sftpCache };
+    for (const k of Object.keys(next)) {
+      if (k.startsWith(prefix) && (k === key || k.startsWith(key + '/'))) delete next[k];
+    }
+    set({ sftpCache: next });
+  },
 
   loadHosts: async () => {
     const hosts = await api<Host[]>('/api/hosts');
@@ -376,7 +537,10 @@ export const useStore = create<AppState>((set, get) => ({
     set({
       tabs: [...get().tabs, tab],
       hostLayouts: { ...get().hostLayouts, [hostId]: newLayout },
-      outerHost: hostId,
+      outerTabs: get().outerTabs.some((t) => t.id === hostId)
+        ? get().outerTabs
+        : [...get().outerTabs, { kind: 'host', id: hostId, hostId }],
+      activeOuterId: hostId,
       activeTabId: tab.id,
     });
     return tab.id;
@@ -392,7 +556,10 @@ export const useStore = create<AppState>((set, get) => ({
     set({
       tabs: [...get().tabs, tab],
       hostLayouts: { ...get().hostLayouts, [hostId]: addTabToGroup(layout, groupId, tab.id) },
-      outerHost: hostId,
+      outerTabs: get().outerTabs.some((t) => t.id === hostId)
+        ? get().outerTabs
+        : [...get().outerTabs, { kind: 'host', id: hostId, hostId }],
+      activeOuterId: hostId,
       activeTabId: tab.id,
     });
     return tab.id;
@@ -404,12 +571,14 @@ export const useStore = create<AppState>((set, get) => ({
     const existing = get().hostLayouts[hostId];
     const newLayout = existing ? addTabToFirstGroup(existing, tab.id) : makeGroup(tab.id);
     const activate = opts?.activate ?? true;
-    const outerHost = activate ? hostId : get().outerHost;
+    const outerTabs = get().outerTabs;
+    const hostTab = outerTabs.some((t) => t.id === hostId);
     set({
       tabs: [...get().tabs, tab],
       hostLayouts: { ...get().hostLayouts, [hostId]: newLayout },
-      outerHost,
-      activeTabId: activate && outerHost === hostId ? tab.id : get().activeTabId,
+      outerTabs: hostTab ? outerTabs : [...outerTabs, { kind: 'host', id: hostId, hostId }],
+      activeOuterId: activate ? hostId : get().activeOuterId,
+      activeTabId: activate ? tab.id : get().activeTabId,
     });
     return tab.id;
   },
@@ -422,24 +591,29 @@ export const useStore = create<AppState>((set, get) => ({
     if (!hostId) return;
     const layout = removeTabFromLayout(get().hostLayouts[hostId], id);
     const hostLayouts = { ...get().hostLayouts };
-    if (!layout) delete hostLayouts[hostId];
-    else hostLayouts[hostId] = layout;
+    const outerTabs = [...get().outerTabs];
+    let activeOuterId = get().activeOuterId;
+    if (!layout) {
+      delete hostLayouts[hostId];
+      const idx = outerTabs.findIndex((t) => t.id === hostId);
+      if (idx >= 0) outerTabs.splice(idx, 1);
+      if (activeOuterId === hostId) {
+        const nextHost = Object.keys(hostLayouts)[0] ?? null;
+        activeOuterId = nextHost ?? null;
+      }
+    } else {
+      hostLayouts[hostId] = layout;
+    }
     const leaves = layout ? collectLeaves(layout) : [];
-    const outerHost = get().outerHost;
     let activeTabId = get().activeTabId;
     if (activeTabId === id) activeTabId = leaves[0] ?? null;
-    if (outerHost === hostId && activeTabId === null) {
-      const nextHost = Object.keys(hostLayouts)[0] ?? null;
-      const nextLayout = nextHost ? hostLayouts[nextHost] : null;
-      set({
-        tabs: get().tabs.filter((t) => t.id !== id),
-        hostLayouts,
-        outerHost: nextHost,
-        activeTabId: nextLayout ? collectLeaves(nextLayout)[0] ?? null : null,
-      });
-      return;
-    }
-    set({ tabs: get().tabs.filter((t) => t.id !== id), hostLayouts, activeTabId });
+    set({
+      tabs: get().tabs.filter((t) => t.id !== id),
+      hostLayouts,
+      outerTabs,
+      activeOuterId,
+      activeTabId,
+    });
   },
 
   closeHostWorkspace: (hostId) => {
@@ -448,18 +622,20 @@ export const useStore = create<AppState>((set, get) => ({
     const closing = new Set(collectLeaves(layout));
     const hostLayouts = { ...get().hostLayouts };
     delete hostLayouts[hostId];
+    const outerTabs = get().outerTabs.filter((t) => t.id !== hostId);
     const nextHost = Object.keys(hostLayouts)[0] ?? null;
     const nextLayout = nextHost ? hostLayouts[nextHost] : null;
+    const wasActive = get().activeOuterId === hostId;
     set({
       tabs: get().tabs.filter((t) => !closing.has(t.id)),
       hostLayouts,
-      outerHost: get().outerHost === hostId ? nextHost : get().outerHost,
-      activeTabId:
-        get().outerHost === hostId
-          ? nextLayout
-            ? collectLeaves(nextLayout)[0] ?? null
-            : null
-          : get().activeTabId,
+      outerTabs,
+      activeOuterId: wasActive ? nextHost : get().activeOuterId,
+      activeTabId: wasActive
+        ? nextLayout
+          ? collectLeaves(nextLayout)[0] ?? null
+          : null
+        : get().activeTabId,
     });
   },
 
@@ -474,7 +650,10 @@ export const useStore = create<AppState>((set, get) => ({
     const layout = groupId ? setGroupActive(get().hostLayouts[hostId], groupId, id) : get().hostLayouts[hostId];
     set({
       hostLayouts: { ...get().hostLayouts, [hostId]: layout },
-      outerHost: hostId,
+      outerTabs: get().outerTabs.some((t) => t.id === hostId)
+        ? get().outerTabs
+        : [...get().outerTabs, { kind: 'host', id: hostId, hostId }],
+      activeOuterId: hostId,
       activeTabId: id,
       tabs: get().tabs.map((t) => (t.id === id && t.notify ? { ...t, notify: undefined } : t)),
     });
@@ -523,7 +702,7 @@ export const useStore = create<AppState>((set, get) => ({
   setTerminalTheme: (terminalTheme) => set({ terminalTheme }),
 
   saveWorkspace: () => {
-    const { tabs, hostLayouts, outerHost } = get();
+    const { tabs, hostLayouts } = get();
     // 仅持久化 web 终端（agent 会话由 MCP 管理，不恢复）
     const webTabs = tabs
       .filter((t) => t.kind === 'web')
@@ -536,6 +715,9 @@ export const useStore = create<AppState>((set, get) => ({
         streamId: null,
         status: 'connecting' as const,
       }));
+    // 外层仅持久化 host tab（编辑器/设置等工具页不恢复）
+    const outerHost =
+      get().outerTabs.find((t): t is Extract<OuterTab, { kind: 'host' }> => t.kind === 'host' && t.id === get().activeOuterId)?.hostId ?? null;
     try {
       localStorage.setItem('ta-workspace', JSON.stringify({ tabs: webTabs, hostLayouts, outerHost, ts: Date.now() }));
     } catch {
@@ -563,11 +745,14 @@ export const useStore = create<AppState>((set, get) => ({
         }
         if (cleaned) hostLayouts[hostId] = cleaned;
       }
-      const outerHost = saved.outerHost && hostLayouts[saved.outerHost] ? saved.outerHost : (Object.keys(hostLayouts)[0] ?? null);
+      const outerTabs: OuterTab[] = Object.keys(hostLayouts).map((hostId) => ({ kind: 'host', id: hostId, hostId }));
+      const activeOuterId =
+        saved.outerHost && hostLayouts[saved.outerHost] ? saved.outerHost : (outerTabs[outerTabs.length - 1]?.id ?? null);
       set({
         tabs: saved.tabs,
         hostLayouts,
-        outerHost,
+        outerTabs,
+        activeOuterId,
         activeTabId: null,
       });
     } catch {

@@ -1,0 +1,23 @@
+{
+  // TypeScript LSP：使用工作区本地的 typescript（node_modules/typescript），
+  // 与 tsx/vite 运行的版本保持一致，避免 IDE 内置 TS 版本漂移。
+  "typescript.tsdk": "node_modules/typescript/lib",
+  "typescript.enablePromptUseWorkspaceTsdk": true,
+  "typescript.preferences.importModuleSpecifier": "relative",
+  "typescript.preferences.quoteStyle": "single",
+
+  // 编辑器通用
+  "editor.formatOnSave": false,
+  "editor.tabSize": 2,
+  "editor.insertSpaces": true,
+  "files.eol": "\n",
+  "files.trimTrailingWhitespace": true,
+  "files.insertFinalNewline": true,
+
+  // npm workspaces：server/ 与 web/ 各自 tsconfig，默认不跨包跳转
+  "search.exclude": {
+    "**/node_modules": true,
+    "**/dist": true,
+    "web/node_modules/.vite": true
+  }
+}

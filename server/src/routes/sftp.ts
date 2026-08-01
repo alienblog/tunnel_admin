@@ -337,28 +337,56 @@ export function registerSftp(
     }
   });
 
-  /** 文本预览：读前 64KB，二进制（含 NUL）时提示 */
+  /** 写文件（编辑器保存）：整体覆盖写入 */
+  app.post('/api/sftp/write', { bodyLimit: 64 * 1024 * 1024 }, async (req, reply) => {
+    if (!requireAuth(req, reply, config)) return;
+    const body = req.body as { hostId: number; path: string; content: string };
+    const { handle, error } = await getSftp(Number(body.hostId));
+    if (error || !handle) return reply.code(400).send({ error: error ?? '无法建立 SFTP 连接' });
+    try {
+      const data = Buffer.from(body.content ?? '', 'utf8');
+      const { promise, resolve, reject } = Promise.withResolvers<Buffer>();
+      handle.sftp.open(body.path, 'w', (e, fd) => (e ? reject(e) : resolve(fd)));
+      const fd = await promise;
+      try {
+        const { promise: wp, resolve: wr, reject: wj } = Promise.withResolvers<void>();
+        handle.sftp.write(fd, data, 0, data.length, 0, (e) => (e ? wj(e) : wr()));
+        await wp;
+        return { ok: true };
+      } finally {
+        const { promise: cp, resolve: cr, reject: cj } = Promise.withResolvers<void>();
+        handle.sftp.close(fd, (e) => (e ? cj(e) : cr()));
+        await cp;
+      }
+    } catch (err) {
+      return reply.code(400).send({ error: (err as Error).message });
+    }
+  });
+
+  /** 文本预览：读前 maxBytes（默认 64KB），二进制（含 NUL）时提示 */
   app.get('/api/sftp/read', async (req, reply) => {
     if (!requireAuth(req, reply, config)) return;
+    const q = req.query as { hostId?: string; path?: string; maxBytes?: string };
     const { hostId, path } = parseQuery(req);
     const { handle, error } = await getSftp(hostId);
     if (error || !handle) return reply.code(400).send({ error: error ?? '无法建立 SFTP 连接' });
     try {
       const MAX = 64 * 1024;
+      const want = Math.min(Number(q.maxBytes) || MAX, 64 * 1024 * 1024);
       const { promise, resolve, reject } = Promise.withResolvers<Buffer>();
       handle.sftp.open(path, 'r', (e, fd) => (e ? reject(e) : resolve(fd)));
       const fd = await promise;
       try {
-        const buf = Buffer.alloc(MAX);
+        const buf = Buffer.alloc(want);
         const { promise: rp, resolve: rr, reject: rj } = Promise.withResolvers<number>();
-        handle.sftp.read(fd, buf, 0, MAX, 0, (e, n) => (e ? rj(e) : rr(n)));
+        handle.sftp.read(fd, buf, 0, want, 0, (e, n) => (e ? rj(e) : rr(n)));
         const n = await rp;
         const binary = buf.subarray(0, n).includes(0);
         return {
           ok: true,
           content: binary ? '' : buf.toString('utf8', 0, n),
           binary,
-          truncated: n >= MAX,
+          truncated: n >= want,
         };
       } finally {
         const { promise: cp, resolve: cr, reject: cj } = Promise.withResolvers<void>();

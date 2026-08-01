@@ -1,9 +1,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { api, type AuditEntry, type CmdRule, type ForwardRec, type Host, type McpToken, type SftpItem } from '../api';
+import { api, type ForwardRec, type Host, type SftpItem } from '../api';
 import { useStore, type View } from '../store';
 import { ws } from '../ws';
 import HostForm from './HostForm';
-import { THEME_NAMES } from '../themes';
+import { downloadWithProgress, uploadFileXHR } from '../transfer';
 
 /** VSCode 风格侧边栏：活动栏切换的视图内容全部在此，编辑区（终端）保持不变 */
 
@@ -79,49 +79,88 @@ function HostTree({ onEdit }: { onEdit: (h: Host) => void }) {
 function SessionSideBar() {
   const tabs = useStore((s) => s.tabs);
   const mcpSessions = useStore((s) => s.mcpSessions);
+  const hosts = useStore((s) => s.hosts);
   const addAgentTab = useStore((s) => s.addAgentTab);
   const setActiveTab = useStore((s) => s.setActiveTab);
+  const addTab = useStore((s) => s.addTab);
   const openHostModal = useStore((s) => s.openHostModal);
+  // 折叠状态（默认：已打开终端展开，agent 与主机折叠）
+  const [openTabs, setOpenTabs] = useState(true);
+  const [openAgents, setOpenAgents] = useState(false);
+  const [openHosts, setOpenHosts] = useState(false);
+
+  const section = (label: string, icon: string, opened: boolean, onToggle: () => void): React.ReactNode => (
+    <button
+      onClick={onToggle}
+      className="flex w-full items-center gap-1.5 px-3 pt-3 pb-1 text-[11px] font-semibold tracking-wide text-[#858585] hover:text-[#cccccc]"
+    >
+      <span className={`text-[10px] transition-transform ${opened ? 'rotate-90' : ''}`}>▶</span>
+      {icon} {label}
+    </button>
+  );
 
   return (
     <div className="flex h-full flex-col">
-      <div className={sectionCls}>主机</div>
-      <div className="min-h-0 flex-1 overflow-y-auto">
-        <HostTree onEdit={openHostModal} />
-      </div>
-      <div className={`border-t border-[#1e1e1e] ${sectionCls}`}>Agent 会话</div>
-      <div className="max-h-40 overflow-y-auto pb-2">
-        {mcpSessions.map((s) => (
-          <div
-            key={s.sessionId}
-            className="group flex cursor-pointer items-center gap-1.5 rounded-sm px-2 py-[3px] text-[13px] text-[#cccccc] hover:bg-[#2a2d2e]"
-            onClick={() => addAgentTab(s, { activate: true })}
-            title={`${s.username}@${s.host}:${s.port}`}
-          >
-            <span className="h-2 w-2 rounded-full bg-[#007acc]" />
-            <span className="truncate">{s.hostName}</span>
-            <span className="ml-auto hidden text-[10px] text-[#858585] group-hover:inline">查看</span>
-          </div>
-        ))}
-        {mcpSessions.length === 0 && <div className="px-3 py-1 text-[12px] text-[#5a5a5a]">暂无活跃的 agent 连接</div>}
-      </div>
-      <div className={`border-t border-[#1e1e1e] ${sectionCls}`}>已打开终端</div>
-      <div className="max-h-40 overflow-y-auto pb-2">
-        {tabs.map((t) => (
-          <div
-            key={t.id}
-            className={`flex cursor-pointer items-center gap-1.5 rounded-sm px-2 py-[3px] text-[13px] hover:bg-[#2a2d2e] ${
-              t.ended ? 'text-[#5a5a5a]' : 'text-[#cccccc]'
-            }`}
-            onClick={() => setActiveTab(t.id)}
-          >
-            <span className="truncate">{t.kind === 'agent' ? '🤖 ' : ''}{t.hostName}</span>
-            {t.notify === 'error' && <span className="text-[#f14c4c]">✗</span>}
-            {t.notify === 'warning' && <span className="text-[#cca700]">⚠</span>}
-            {t.notify === 'success' && <span className="text-[#4ec9b0]">✓</span>}
-          </div>
-        ))}
-        {tabs.length === 0 && <div className="px-3 py-1 text-[12px] text-[#5a5a5a]">暂无</div>}
+      {/* 已打开终端（最上，默认展开） */}
+      {section('已打开终端', '🖥', openTabs, () => setOpenTabs(!openTabs))}
+      {openTabs && (
+        <div className="max-h-40 overflow-y-auto pb-1">
+          {tabs.map((t) => (
+            <div
+              key={t.id}
+              className={`flex cursor-pointer items-center gap-1.5 rounded-sm px-2 py-[3px] text-[13px] hover:bg-[#2a2d2e] ${
+                t.ended ? 'text-[#5a5a5a]' : 'text-[#cccccc]'
+              }`}
+              onClick={() => setActiveTab(t.id)}
+            >
+              <span className="truncate">{t.kind === 'agent' ? '🤖 ' : ''}{t.hostName}</span>
+              {t.notify === 'error' && <span className="text-[#f14c4c]">✗</span>}
+              {t.notify === 'warning' && <span className="text-[#cca700]">⚠</span>}
+              {t.notify === 'success' && <span className="text-[#4ec9b0]">✓</span>}
+            </div>
+          ))}
+          {tabs.length === 0 && <div className="px-3 py-1 text-[12px] text-[#5a5a5a]">暂无</div>}
+        </div>
+      )}
+
+      {/* Agent 会话 */}
+      {section('Agent 会话', '🤖', openAgents, () => setOpenAgents(!openAgents))}
+      {openAgents && (
+        <div className="max-h-40 overflow-y-auto pb-1">
+          {mcpSessions.map((s) => (
+            <div
+              key={s.sessionId}
+              className="group flex cursor-pointer items-center gap-1.5 rounded-sm px-2 py-[3px] text-[13px] text-[#cccccc] hover:bg-[#2a2d2e]"
+              onClick={() => addAgentTab(s, { activate: true })}
+              title={`${s.username}@${s.host}:${s.port}`}
+            >
+              <span className="h-2 w-2 rounded-full bg-[#007acc]" />
+              <span className="truncate">{s.hostName}</span>
+              <span className="ml-auto hidden text-[10px] text-[#858585] group-hover:inline">查看</span>
+            </div>
+          ))}
+          {mcpSessions.length === 0 && <div className="px-3 py-1 text-[12px] text-[#5a5a5a]">暂无活跃的 agent 连接</div>}
+        </div>
+      )}
+
+      {/* 主机 */}
+      {section('主机', '🖧', openHosts, () => setOpenHosts(!openHosts))}
+      {openHosts && (
+        <div className="min-h-0 flex-1 overflow-y-auto pb-2">
+          <HostTree onEdit={openHostModal} />
+        </div>
+      )}
+
+      {/* 底部快捷操作 */}
+      <div className="flex items-center gap-1 border-t border-[#1e1e1e] px-3 py-1.5">
+        <button
+          onClick={() => void addTab(hosts[0])}
+          disabled={hosts.length === 0}
+          title={hosts.length === 0 ? '暂无主机' : '打开第一台主机的终端'}
+          className="rounded-sm border border-[#3c3c3c] px-2 py-0.5 text-[11px] text-[#cccccc] hover:bg-[#3a3d41] disabled:opacity-40"
+        >
+          ⚡ 快速终端
+        </button>
       </div>
     </div>
   );
@@ -358,26 +397,12 @@ function SftpSideBar() {
     return sftp.path;
   };
 
-  /** 单文件上传（XHR 带进度） */
-  const uploadFile = (f: File, targetPath: string): Promise<void> =>
-    new Promise((resolve, reject) => {
-      const xhr = new XMLHttpRequest();
-      xhr.open('POST', `/api/sftp/upload?hostId=${hostId}&path=${encodeURIComponent(targetPath)}`);
-      xhr.setRequestHeader('Content-Type', 'application/octet-stream');
-      xhr.upload.onprogress = (e) => {
-        if (e.lengthComputable) setUploading({ name: f.name, pct: Math.round((e.loaded / e.total) * 100) });
-      };
-      xhr.onload = () => {
-        if (xhr.status === 200) return resolve();
-        try {
-          reject(new Error(JSON.parse(xhr.responseText).error ?? '上传失败'));
-        } catch {
-          reject(new Error('上传失败'));
-        }
-      };
-      xhr.onerror = () => reject(new Error('网络错误'));
-      xhr.send(f);
-    });
+  /** 单文件上传（XHR 带进度，记录到传输管理器） */
+  const uploadFile = (f: File, targetPath: string): Promise<void> => {
+    if (!hostId) return Promise.reject(new Error('未选择主机'));
+    const hostName = useStore.getState().tabs.find((t) => t.id === useStore.getState().activeTabId)?.hostName ?? '远程';
+    return uploadFileXHR(hostName, hostId, f, targetPath, (pct) => setUploading({ name: f.name, pct }));
+  };
 
   /** 上传到指定目录（支持拖入的目录：webkitRelativePath 递归建目录） */
   const uploadTo = async (dirPath: string, files: FileList | File[] | null): Promise<void> => {
@@ -512,10 +537,44 @@ function SftpSideBar() {
     }
   };
 
-  /** 目录打包下载（tar 流式） */
+  /** 双击文件：在外层打开编辑器 tab */
+  const openInEditor = (item: SftpItem, parentPath: string): void => {
+    if (!hostId) return;
+    const path = joinPath(parentPath, item.name);
+    const activeTab = useStore.getState().tabs.find((t) => t.id === useStore.getState().activeTabId);
+    useStore.getState().openOuterTab({
+      kind: 'editor',
+      id: `editor-${hostId}-${path}`,
+      hostId,
+      hostName: activeTab?.hostName ?? '远程',
+      path,
+      name: item.name,
+    });
+  };
+
+  /** 目录打包下载（tar 流式，记录到传输管理器） */
   const downloadDir = (item: SftpItem, parentPath: string): void => {
     if (!hostId) return;
-    window.location.href = `/api/sftp/archive?hostId=${hostId}&path=${encodeURIComponent(joinPath(parentPath, item.name))}`;
+    const hostName = useStore.getState().tabs.find((t) => t.id === useStore.getState().activeTabId)?.hostName ?? '远程';
+    void downloadWithProgress(
+      hostName,
+      `/api/sftp/archive?hostId=${hostId}&path=${encodeURIComponent(joinPath(parentPath, item.name))}`,
+      `${item.name}.tar`,
+      joinPath(parentPath, item.name),
+    ).catch(() => {
+      // 错误已在传输记录中体现
+    });
+    setCtx(null);
+  };
+
+  /** 文件下载（记录到传输管理器） */
+  const downloadFile = (item: SftpItem, parentPath: string): void => {
+    if (!hostId) return;
+    const hostName = useStore.getState().tabs.find((t) => t.id === useStore.getState().activeTabId)?.hostName ?? '远程';
+    const path = joinPath(parentPath, item.name);
+    void downloadWithProgress(hostName, `/api/sftp/download?hostId=${hostId}&path=${encodeURIComponent(path)}`, item.name, path).catch(() => {
+      // 错误已在传输记录中体现
+    });
     setCtx(null);
   };
 
@@ -585,7 +644,7 @@ function SftpSideBar() {
               setCtx({ x: e.clientX, y: e.clientY, item: it, parentPath: dirPath });
             }}
             onDoubleClick={() => {
-              if (!isDir) void openPreview(it, dirPath);
+              if (!isDir) openInEditor(it, dirPath);
             }}
             onDragOver={(e) => {
               if (!isDir) return;
@@ -836,14 +895,9 @@ function SftpSideBar() {
               <button className={menuItemCls} onClick={() => { void openPreview(ctx.item, ctx.parentPath); setCtx(null); }}>
                 👁 预览
               </button>
-              <a
-                className={`${menuItemCls} no-underline`}
-                href={`/api/sftp/download?hostId=${hostId}&path=${encodeURIComponent(joinPath(ctx.parentPath, ctx.item.name))}`}
-                download={ctx.item.name}
-                onClick={() => setCtx(null)}
-              >
+              <button className={menuItemCls} onClick={() => downloadFile(ctx.item, ctx.parentPath)}>
                 ↓ 下载
-              </a>
+              </button>
               <div className="my-1 border-t border-[#3c3c3c]" />
             </>
           )}
@@ -1074,313 +1128,6 @@ function ForwardSideBar() {
   );
 }
 
-function AuditSideBar() {
-  const filter = useStore((s) => s.auditFilter);
-  const setFilter = useStore((s) => s.setAuditFilter);
-  const [entries, setEntries] = useState<AuditEntry[]>([]);
-
-  const load = useCallback(async (): Promise<void> => {
-    try {
-      setEntries(await api<AuditEntry[]>('/api/audit?limit=200'));
-    } catch {
-      // 忽略
-    }
-  }, []);
-
-  useEffect(() => {
-    void load();
-  }, [load]);
-
-  const shown = entries.filter((e) => filter === 'all' || e.source === filter);
-
-  return (
-    <div className="flex h-full flex-col">
-      <div className="flex items-center justify-between px-3 pt-3 pb-1">
-        <span className="text-[11px] font-semibold tracking-wide text-[#858585]">审计日志</span>
-        <button onClick={() => void load()} className="rounded px-1 text-[#858585] hover:bg-[#3a3d41] hover:text-white" title="刷新">
-          ↻
-        </button>
-      </div>
-      <div className="flex gap-2 px-3 pb-2 text-[11px] text-[#858585]">
-        {(
-          [
-            ['all', '全部'],
-            ['mcp', 'MCP'],
-            ['web', 'Web'],
-          ] as const
-        ).map(([value, label]) => (
-          <label key={value} className="flex cursor-pointer items-center gap-1">
-            <input type="radio" name="audit-filter" checked={filter === value} onChange={() => setFilter(value)} className="accent-[#007acc]" />
-            {label}
-          </label>
-        ))}
-      </div>
-      <div className="min-h-0 flex-1 overflow-y-auto pb-2">
-        {shown.map((e) => (
-          <div key={e.id} className="rounded-sm px-2 py-[3px] hover:bg-[#2a2d2e]">
-            <div className="flex items-center gap-1.5 text-[12px]">
-              <span className={e.source === 'mcp' ? 'text-[#cca700]' : 'text-[#4fc1ff]'}>{e.source === 'mcp' ? 'MCP' : 'Web'}</span>
-              <span className="truncate font-mono text-[#9cdcfe]">{e.command || '—'}</span>
-              {e.exit_code !== null && (
-                <span className={e.exit_code === 0 ? 'ml-auto shrink-0 text-[#4ec9b0]' : 'ml-auto shrink-0 text-[#f14c4c]'}>{e.exit_code}</span>
-              )}
-            </div>
-            <div className="text-[10px] text-[#5a5a5a]">{e.ts} · {e.host_name ?? '-'} · {e.duration_ms}ms</div>
-          </div>
-        ))}
-        {shown.length === 0 && <div className="px-3 py-1 text-[12px] text-[#5a5a5a]">暂无记录</div>}
-      </div>
-    </div>
-  );
-}
-
-/** 告警阈值配置（localStorage 持久） */
-function AlertThresholds() {
-  const alertThresholds = useStore((s) => s.alertThresholds);
-  const setAlertThresholds = useStore((s) => s.setAlertThresholds);
-
-  useEffect(() => {
-    // 载入本地保存的阈值
-    try {
-      const saved = localStorage.getItem('ta-alert-thresholds');
-      if (saved) setAlertThresholds(JSON.parse(saved));
-    } catch {
-      // 忽略
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
-  const set = (key: 'cpu' | 'mem' | 'disk', v: string): void => {
-    const n = Math.min(100, Math.max(1, parseInt(v, 10) || 90));
-    const next = { ...alertThresholds, [key]: n };
-    setAlertThresholds(next);
-    localStorage.setItem('ta-alert-thresholds', JSON.stringify(next));
-  };
-
-  const rows: Array<[keyof typeof alertThresholds, string]> = [
-    ['cpu', 'CPU'],
-    ['mem', '内存'],
-    ['disk', '磁盘'],
-  ];
-  return (
-    <div className="flex flex-col gap-1.5">
-      {rows.map(([key, label]) => (
-        <label key={key} className="flex items-center gap-2 text-[11px] text-[#858585]">
-          <span className="w-8">{label}</span>
-          <input
-            type="number"
-            min={1}
-            max={100}
-            value={alertThresholds[key]}
-            onChange={(e) => set(key, e.target.value)}
-            className="w-16 rounded-sm border border-[#3c3c3c] bg-[#1e1e1e] px-1.5 py-0.5 text-[11px] text-[#cccccc] outline-none focus:border-[#007acc]"
-          />
-          <span>%</span>
-        </label>
-      ))}
-      <div className="text-[10px] text-[#5a5a5a]">指标超限时状态栏弹出提醒（恢复后重置）</div>
-    </div>
-  );
-}
-
-function SettingsSideBar() {
-  const themeName = useStore((s) => s.terminalTheme);
-  const setTerminalTheme = useStore((s) => s.setTerminalTheme);
-  const [tokens, setTokens] = useState<McpToken[]>([]);
-  const [name, setName] = useState('');
-  const [created, setCreated] = useState<string | null>(null);
-  const [error, setError] = useState('');
-  // 命令规则
-  const [rules, setRules] = useState<CmdRule[]>([]);
-  const [rulePattern, setRulePattern] = useState('');
-  const [ruleAction, setRuleAction] = useState<'block' | 'approve'>('block');
-  const [ruleNote, setRuleNote] = useState('');
-
-  const loadRules = useCallback(async (): Promise<void> => {
-    try {
-      setRules(await api<CmdRule[]>('/api/cmd-rules'));
-    } catch {
-      // 忽略
-    }
-  }, []);
-
-  useEffect(() => {
-    void loadRules();
-  }, [loadRules]);
-
-  const addRule = async (e: React.FormEvent): Promise<void> => {
-    e.preventDefault();
-    if (!rulePattern.trim()) return;
-    try {
-      await api('/api/cmd-rules', { method: 'POST', body: JSON.stringify({ pattern: rulePattern, action: ruleAction, note: ruleNote }) });
-      setRulePattern('');
-      setRuleNote('');
-      await loadRules();
-    } catch (err) {
-      setError((err as Error).message);
-    }
-  };
-
-  const removeRule = async (id: number): Promise<void> => {
-    try {
-      await api(`/api/cmd-rules/${id}`, { method: 'DELETE' });
-      await loadRules();
-    } catch {
-      // 忽略
-    }
-  };
-
-  const load = useCallback(async (): Promise<void> => {
-    try {
-      setTokens(await api<McpToken[]>('/api/tokens'));
-    } catch (err) {
-      setError((err as Error).message);
-    }
-  }, []);
-
-  useEffect(() => {
-    void load();
-  }, [load]);
-
-  const create = async (e: React.FormEvent): Promise<void> => {
-    e.preventDefault();
-    setError('');
-    try {
-      const r = await api<{ token: string }>('/api/tokens', { method: 'POST', body: JSON.stringify({ name }) });
-      setCreated(r.token);
-      setName('');
-      await load();
-    } catch (err) {
-      setError((err as Error).message);
-    }
-  };
-
-  const revoke = async (t: McpToken): Promise<void> => {
-    if (!confirm(`确认吊销 token「${t.name}」？`)) return;
-    try {
-      await api(`/api/tokens/${t.id}`, { method: 'DELETE' });
-      await load();
-    } catch (err) {
-      setError((err as Error).message);
-    }
-  };
-
-  return (
-    <div className="flex h-full flex-col">
-      <div className={sectionCls}>MCP Token</div>
-      <div className="px-3 pb-2 text-[11px] leading-relaxed text-[#5a5a5a]">
-        Agent 调用 <code className="rounded-sm bg-[#1e1e1e] px-1 font-mono text-[10px] text-[#4ec9b0]">{location.origin}/mcp</code>
-      </div>
-      {error && <div className="border-t border-[#252526] bg-[#3b1d1d] px-3 py-1 text-[11px] text-[#f14c4c]">{error}</div>}
-      <form onSubmit={create} className="flex gap-1.5 px-3 pb-2">
-        <input
-          value={name}
-          onChange={(e) => setName(e.target.value)}
-          placeholder="用途标识，如 claude-code"
-          className="min-w-0 flex-1 rounded-sm border border-[#3c3c3c] bg-[#1e1e1e] px-2 py-1 text-[12px] text-[#cccccc] outline-none focus:border-[#007acc]"
-        />
-        <button type="submit" className="shrink-0 rounded-sm bg-[#0e639c] px-2 py-1 text-[12px] font-medium text-white hover:bg-[#1177bb]">生成</button>
-      </form>
-      {created && (
-        <div className="mx-3 mb-2 rounded-sm border border-[#cca700]/60 bg-[#3b3116] p-2">
-          <div className="mb-1 text-[11px] font-medium text-[#cca700]">Token 仅显示一次：</div>
-          <div className="break-all font-mono text-[11px] text-[#4ec9b0]">{created}</div>
-          <button onClick={() => setCreated(null)} className="mt-1 text-[10px] text-[#858585] hover:text-[#cccccc]">已保存，关闭</button>
-        </div>
-      )}
-      <div className={`border-t border-[#1e1e1e] ${sectionCls}`}>已有 Token</div>
-      <div className="min-h-0 flex-1 overflow-y-auto pb-2">
-        {tokens.map((t) => (
-          <div key={t.id} className="group flex items-center gap-1.5 rounded-sm px-2 py-[3px] text-[12px] hover:bg-[#2a2d2e]">
-            <span className="truncate text-[#cccccc]">{t.name}</span>
-            <span className="ml-auto hidden shrink-0 text-[10px] text-[#5a5a5a] group-hover:inline">{t.last_used_at ?? '未使用'}</span>
-            <button title="吊销" className="hidden shrink-0 rounded px-1 text-[#858585] hover:bg-[#f14c4c]/20 hover:text-[#f14c4c] group-hover:block" onClick={() => void revoke(t)}>
-              ×
-            </button>
-          </div>
-        ))}
-        {tokens.length === 0 && <div className="px-3 py-1 text-[12px] text-[#5a5a5a]">暂无 Token</div>}
-      </div>
-
-      <div className={`border-t border-[#1e1e1e] ${sectionCls}`}>终端主题</div>
-      <div className="px-3 pb-2">
-        <div className="flex flex-col gap-1.5">
-          {Object.entries(THEME_NAMES).map(([key, label]) => (
-            <label key={key} className="flex cursor-pointer items-center gap-2 text-[11px] text-[#858585]">
-              <input
-                type="radio"
-                name="terminal-theme"
-                checked={themeName === key}
-                onChange={() => {
-                  setTerminalTheme(key);
-                  localStorage.setItem('ta-terminal-theme', key);
-                }}
-                className="accent-[#007acc]"
-              />
-              {label}
-            </label>
-          ))}
-        </div>
-      </div>
-
-      <div className={`border-t border-[#1e1e1e] ${sectionCls}`}>告警阈值</div>
-      <div className="px-3 pb-2">
-        <AlertThresholds />
-      </div>
-
-      <div className={`border-t border-[#1e1e1e] ${sectionCls}`}>危险命令规则</div>
-      <div className="px-3 pb-2 text-[11px] leading-relaxed text-[#5a5a5a]">
-        MCP 执行匹配规则的命令时：拦截（block）或弹窗审批（approve）
-      </div>
-      {error && <div className="px-3 pb-1 text-[11px] text-[#f14c4c]">{error}</div>}
-      <form onSubmit={addRule} className="flex flex-col gap-1.5 px-3 pb-2">
-        <input
-          value={rulePattern}
-          onChange={(e) => setRulePattern(e.target.value)}
-          placeholder="正则，如 ^\\s*rm\\s+-rf\\s+/ "
-          className="rounded-sm border border-[#3c3c3c] bg-[#1e1e1e] px-2 py-1 font-mono text-[11px] text-[#cccccc] outline-none focus:border-[#007acc]"
-        />
-        <div className="flex gap-1.5">
-          <select
-            value={ruleAction}
-            onChange={(e) => setRuleAction(e.target.value as 'block' | 'approve')}
-            className="rounded-sm border border-[#3c3c3c] bg-[#1e1e1e] px-1.5 py-1 text-[11px] text-[#cccccc] outline-none"
-          >
-            <option value="block">拦截</option>
-            <option value="approve">审批</option>
-          </select>
-          <input
-            value={ruleNote}
-            onChange={(e) => setRuleNote(e.target.value)}
-            placeholder="说明"
-            className="min-w-0 flex-1 rounded-sm border border-[#3c3c3c] bg-[#1e1e1e] px-2 py-1 text-[11px] text-[#cccccc] outline-none focus:border-[#007acc]"
-          />
-          <button type="submit" className="shrink-0 rounded-sm bg-[#0e639c] px-2 py-1 text-[11px] text-white hover:bg-[#1177bb]">＋</button>
-        </div>
-      </form>
-      <div className="min-h-0 flex-1 overflow-y-auto pb-2">
-        {rules.map((r) => (
-          <div key={r.id} className="group flex items-center gap-1.5 rounded-sm px-2 py-[3px] text-[11px] hover:bg-[#2a2d2e]">
-            <span className={r.action === 'block' ? 'shrink-0 text-[#f14c4c]' : 'shrink-0 text-[#cca700]'}>
-              {r.action === 'block' ? '⛔' : '⚠'}
-            </span>
-            <span className="min-w-0 flex-1 truncate font-mono text-[#9cdcfe]">{r.pattern}</span>
-            <span className="hidden shrink-0 text-[#5a5a5a] group-hover:inline">{r.note}</span>
-            <button
-              title="删除"
-              className="hidden shrink-0 rounded px-1 text-[#858585] hover:bg-[#f14c4c]/20 hover:text-[#f14c4c] group-hover:block"
-              onClick={() => void removeRule(r.id)}
-            >
-              ×
-            </button>
-          </div>
-        ))}
-        {rules.length === 0 && <div className="px-3 py-1 text-[12px] text-[#5a5a5a]">暂无规则</div>}
-      </div>
-    </div>
-  );
-}
-
 export default function SideBar({ view }: { view: View }) {
   return (
     <aside className="flex w-80 shrink-0 flex-col overflow-hidden border-r border-[#1e1e1e] bg-[#252526]">
@@ -1388,8 +1135,6 @@ export default function SideBar({ view }: { view: View }) {
       {view === 'hosts' && <HostsSideBar />}
       {view === 'sftp' && <SftpSideBar />}
       {view === 'forward' && <ForwardSideBar />}
-      {view === 'audit' && <AuditSideBar />}
-      {view === 'settings' && <SettingsSideBar />}
     </aside>
   );
 }

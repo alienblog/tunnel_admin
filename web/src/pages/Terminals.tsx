@@ -5,12 +5,15 @@ import {
   collectLeaves,
   type DropPos,
   type LayoutNode,
+  type OuterTab,
 } from '../store';
 import TerminalView from '../components/TerminalView';
+import { AuditTab, EditorTab, SettingsTab, TransferTab } from './tabs';
 
 /**
  * 双层工作区（VSCode 编辑器组模型）：
- * - 外层 = 主机 tab；内层 = 该主机的布局树（group / split）
+ * - 外层 = 通用 tab（主机工作区 / 文件编辑器 / 设置 / 传输管理器 / 审计）
+ * - 主机工作区内层 = 布局树（group / split）
  * - group = 终端组：自带 tab 栏（含加号），加号在组内新建终端（不分屏）
  * - split = 分屏：分割的是组；拖 tab 到面板边缘分屏、中心合并进该组
  */
@@ -215,44 +218,110 @@ function LayoutNodeView({ node, hostId }: { node: LayoutNode; hostId: string }) 
   return <SplitView node={node} hostId={hostId} />;
 }
 
+/** 外层 tab 标签图标 */
+function OuterTabIcon({ tab }: { tab: OuterTab }) {
+  if (tab.kind === 'host') {
+    return (
+      <svg viewBox="0 0 16 16" className="h-3.5 w-3.5 text-[#858585]" fill="currentColor">
+        <path d="M1.5 3A1.5 1.5 0 013 1.5h3.086c.398 0 .78.158 1.061.44l.914.914H13A1.5 1.5 0 0114.5 4.354v8.146A1.5 1.5 0 0113 14H3a1.5 1.5 0 01-1.5-1.5V3z" />
+      </svg>
+    );
+  }
+  if (tab.kind === 'editor') {
+    return (
+      <svg viewBox="0 0 16 16" className="h-3.5 w-3.5 text-[#4fc1ff]" fill="currentColor">
+        <path d="M2 1.5h4.5l2 2H14a1 1 0 011 1V13a1 1 0 01-1 1H2a1 1 0 01-1-1V2.5a1 1 0 011-1z" />
+      </svg>
+    );
+  }
+  if (tab.kind === 'transfer') {
+    return (
+      <svg viewBox="0 0 16 16" className="h-3.5 w-3.5 text-[#4ec9b0]" fill="currentColor">
+        <path d="M8 1.5a.75.75 0 01.75.75v9.19l2.47-2.47a.75.75 0 111.06 1.06l-3.75 3.75a.75.75 0 01-1.06 0l-3.75-3.75a.75.75 0 111.06-1.06l2.47 2.47V2.25A.75.75 0 018 1.5z" />
+      </svg>
+    );
+  }
+  if (tab.kind === 'audit') {
+    return (
+      <svg viewBox="0 0 16 16" className="h-3.5 w-3.5 text-[#cca700]" fill="currentColor">
+        <path d="M2 3.75A.75.75 0 012.75 3h10.5a.75.75 0 010 1.5H2.75A.75.75 0 012 3.75zm0 4A.75.75 0 012.75 7h10.5a.75.75 0 010 1.5H2.75A.75.75 0 012 7.75zm0 4A.75.75 0 012.75 11h6.5a.75.75 0 010 1.5h-6.5A.75.75 0 012 11.75z" />
+      </svg>
+    );
+  }
+  return (
+    <svg viewBox="0 0 16 16" className="h-3.5 w-3.5 text-[#858585]" fill="currentColor">
+      <path d="M6.5 1.5a.75.75 0 01.75-.75h1.5a.75.75 0 01.75.75V2.9a4.25 4.25 0 011.8 1.04l1.46-.6a.75.75 0 01.97.34l.75 1.3a.75.75 0 01-.25 1L13.5 7a4.3 4.3 0 010 2l1.23.96a.75.75 0 01.25 1l-.75 1.3a.75.75 0 01-.97.34l-1.46-.6a4.25 4.25 0 01-1.8 1.04v1.76a.75.75 0 01-.75.75h-1.5a.75.75 0 01-.75-.75v-1.76a4.25 4.25 0 01-1.8-1.04l-1.46.6a.75.75 0 01-.97-.34l-.75-1.3a.75.75 0 01.25-1L2.5 9a4.3 4.3 0 010-2L1.27 6.04a.75.75 0 01-.25-1l.75-1.3a.75.75 0 01.97-.34l1.46.6a4.25 4.25 0 011.8-1.04V1.5zM8 5.25A2.75 2.75 0 108 10.75 2.75 2.75 0 008 5.25z" />
+    </svg>
+  );
+}
+
 export default function Terminals() {
-  const outerHost = useStore((s) => s.outerHost);
+  const outerTabs = useStore((s) => s.outerTabs);
+  const activeOuterId = useStore((s) => s.activeOuterId);
   const hostLayouts = useStore((s) => s.hostLayouts);
   const setActiveTab = useStore((s) => s.setActiveTab);
-  const closeHostWorkspace = useStore((s) => s.closeHostWorkspace);
+  const setActiveOuter = useStore((s) => s.setActiveOuter);
+  const closeOuterTab = useStore((s) => s.closeOuterTab);
   const tabs = useStore((s) => s.tabs);
 
-  const hostIds = Object.keys(hostLayouts).filter((h) => hostLayouts[h] !== null);
+  const activeTab = outerTabs.find((t) => t.id === activeOuterId) ?? null;
 
   return (
     <div className="flex h-full flex-col">
-      {/* 外层主机 tab 栏 */}
+      {/* 外层 tab 栏 */}
       <div className="flex h-9 shrink-0 items-stretch overflow-x-auto border-b border-[#1e1e1e] bg-[#2d2d2d]">
-        {hostIds.map((hostId) => {
-          const leaves = collectLeaves(hostLayouts[hostId]);
-          const host = tabs.find((t) => t.id === leaves[0]);
-          const active = outerHost === hostId;
+        {outerTabs.map((tab) => {
+          const active = tab.id === activeOuterId;
+          if (tab.kind === 'host') {
+            const leaves = collectLeaves(hostLayouts[tab.hostId]);
+            const host = tabs.find((t) => t.id === leaves[0]);
+            return (
+              <div
+                key={tab.id}
+                onClick={() => {
+                  setActiveOuter(tab.id);
+                  const first = leaves[0];
+                  if (first) setActiveTab(first);
+                }}
+                className={`group flex cursor-pointer items-center gap-1.5 border-r border-[#1e1e1e] px-3 text-[13px] whitespace-nowrap select-none ${
+                  active ? 'border-t-2 border-t-[#007acc] bg-[#1e1e1e] text-white' : 'text-[#969696] hover:bg-[#333333]'
+                }`}
+              >
+                <OuterTabIcon tab={tab} />
+                <span className="max-w-32 truncate">{host?.hostName ?? tab.hostId}</span>
+                <span className="rounded-sm bg-[#3a3d41] px-1 text-[10px] text-[#cccccc]">{leaves.length}</span>
+                <button
+                  title="关闭该主机全部终端"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    closeOuterTab(tab.id);
+                  }}
+                  className="rounded-sm px-1 text-[#969696] hover:bg-[#3a3d41] hover:text-white"
+                >
+                  ×
+                </button>
+              </div>
+            );
+          }
+          // 工具 tab：设置 / 传输 / 审计 / 编辑器
+          const label =
+            tab.kind === 'settings' ? '设置' : tab.kind === 'transfer' ? '传输' : tab.kind === 'audit' ? '审计' : tab.name;
           return (
             <div
-              key={hostId}
-              onClick={() => {
-                const first = leaves[0];
-                if (first) setActiveTab(first);
-              }}
+              key={tab.id}
+              onClick={() => setActiveOuter(tab.id)}
               className={`group flex cursor-pointer items-center gap-1.5 border-r border-[#1e1e1e] px-3 text-[13px] whitespace-nowrap select-none ${
                 active ? 'border-t-2 border-t-[#007acc] bg-[#1e1e1e] text-white' : 'text-[#969696] hover:bg-[#333333]'
               }`}
+              title={tab.kind === 'editor' ? tab.path : label}
             >
-              <svg viewBox="0 0 16 16" className="h-3.5 w-3.5 text-[#858585]" fill="currentColor">
-                <path d="M1.5 3A1.5 1.5 0 013 1.5h3.086c.398 0 .78.158 1.061.44l.914.914H13A1.5 1.5 0 0114.5 4.354v8.146A1.5 1.5 0 0113 14H3a1.5 1.5 0 01-1.5-1.5V3z" />
-              </svg>
-              <span className="max-w-32 truncate">{host?.hostName ?? hostId}</span>
-              <span className="rounded-sm bg-[#3a3d41] px-1 text-[10px] text-[#cccccc]">{leaves.length}</span>
+              <OuterTabIcon tab={tab} />
+              <span className="max-w-40 truncate">{label}</span>
               <button
-                title="关闭该主机全部终端"
+                title="关闭"
                 onClick={(e) => {
                   e.stopPropagation();
-                  closeHostWorkspace(hostId);
+                  closeOuterTab(tab.id);
                 }}
                 className="rounded-sm px-1 text-[#969696] hover:bg-[#3a3d41] hover:text-white"
               >
@@ -261,22 +330,34 @@ export default function Terminals() {
             </div>
           );
         })}
-        {hostIds.length === 0 && (
+        {outerTabs.length === 0 && (
           <div className="flex items-center px-3 text-[12px] text-[#5a5a5a]">从左侧主机列表选择主机打开终端</div>
         )}
       </div>
 
-      {/* 内层：活动主机的布局 */}
+      {/* 内容区 */}
       <div className="relative min-h-0 flex-1">
-        {outerHost && hostLayouts[outerHost] ? (
-          <div className="h-full">
-            <LayoutNodeView node={hostLayouts[outerHost]} hostId={outerHost} />
-          </div>
-        ) : (
+        {!activeTab ? (
           <div className="flex h-full flex-col items-center justify-center gap-2 text-[#5a5a5a]">
             <div className="text-4xl">⌨️</div>
             <div>从左侧主机列表选择主机打开终端</div>
           </div>
+        ) : activeTab.kind === 'host' ? (
+          <div className="h-full">
+            {hostLayouts[activeTab.hostId] ? (
+              <LayoutNodeView node={hostLayouts[activeTab.hostId]} hostId={activeTab.hostId} />
+            ) : (
+              <div className="flex h-full items-center justify-center text-[#5a5a5a]">终端已全部关闭</div>
+            )}
+          </div>
+        ) : activeTab.kind === 'editor' ? (
+          <EditorTab tab={activeTab} />
+        ) : activeTab.kind === 'settings' ? (
+          <SettingsTab />
+        ) : activeTab.kind === 'transfer' ? (
+          <TransferTab />
+        ) : (
+          <AuditTab />
         )}
       </div>
     </div>
