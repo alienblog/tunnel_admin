@@ -47,6 +47,8 @@ class WsClient {
   private reconnectAttempt = 0;
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private closedByUser = false;
+  /** 连接建立前发送的消息（CONNECTING 排队，OPEN 后补发） */
+  private pending: string[] = [];
 
   connect(): void {
     this.closedByUser = false;
@@ -57,6 +59,11 @@ class WsClient {
 
     ws.onopen = () => {
       this.reconnectAttempt = 0;
+      // 补发连接期间排队的消息（如页面刷新后立即发出的 terminal:open）
+      if (this.pending.length > 0) {
+        for (const m of this.pending) ws.send(m);
+        this.pending = [];
+      }
       window.dispatchEvent(new CustomEvent('ta:ws:open'));
     };
     ws.onmessage = (e) => {
@@ -80,6 +87,7 @@ class WsClient {
   close(): void {
     this.closedByUser = true;
     if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
+    this.pending = [];
     this.ws?.close();
     this.ws = null;
   }
@@ -87,6 +95,10 @@ class WsClient {
   send(msg: ClientMsg): void {
     if (this.ws?.readyState === WebSocket.OPEN) {
       this.ws.send(JSON.stringify(msg));
+    } else if (this.ws?.readyState === WebSocket.CONNECTING) {
+      // 连接建立中：排队，OPEN 后补发（避免 terminal:open 等消息静默丢失）
+      this.pending.push(JSON.stringify(msg));
+      if (this.pending.length > 200) this.pending.shift();
     }
   }
 

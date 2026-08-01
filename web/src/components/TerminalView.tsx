@@ -84,6 +84,10 @@ export default function TerminalView({ tab }: { tab: TerminalTab }) {
   // 录制缓冲（帧：相对时间戳 + 数据，cap 10000）
   const recordingRef = useRef<Array<{ t: number; data: string }>>([]);
   const [replayOpen, setReplayOpen] = useState(false);
+  // 连接状态徽标（不写入终端文本）：connecting 常驻 / connected 2s 淡出 / error、closed 常驻
+  const [connBadge, setConnBadge] = useState<{ kind: 'connecting' | 'connected' | 'error' | 'closed'; text: string } | null>(null);
+  const badgeTimerRef = useRef<number | undefined>(undefined);
+  const pushToast = useStore((s) => s.pushToast);
 
   const isActive = activeTabId === tab.id;
   const isAgent = tab.kind === 'agent';
@@ -315,23 +319,29 @@ export default function TerminalView({ tab }: { tab: TerminalTab }) {
 
     const offExit = ws.on('terminal:exit', (e) => {
       if (e.streamId === streamIdRef.current) {
-        term.write('\r\n\x1b[38;5;244m[会话已关闭]\x1b[0m\r\n');
         setTabStatus(tab.id, { status: 'closed' });
+        setConnBadge({ kind: 'closed', text: '会话已关闭' });
+        pushToast({ hostName: tab.hostName, kind: 'warning', text: '终端会话已关闭' });
       }
     });
     const offReady = ws.on('terminal:ready', (e) => {
       if (e.reqId !== tab.id) return;
       streamIdRef.current = e.streamId;
       setTabStatus(tab.id, { status: 'connected', streamId: e.streamId });
+      // 已连接徽标 2 秒后淡出
+      setConnBadge({ kind: 'connected', text: '已连接' });
+      window.clearTimeout(badgeTimerRef.current);
+      badgeTimerRef.current = window.setTimeout(() => setConnBadge(null), 2000);
     });
     const offError = ws.on('terminal:error', (e) => {
       if (e.reqId !== undefined && e.reqId !== tab.id) return;
-      term.write(`\r\n\x1b[38;5;196m[连接失败] ${e.message}\x1b[0m\r\n`);
       setTabStatus(tab.id, { status: 'error', error: e.message });
+      setConnBadge({ kind: 'error', text: e.message });
+      pushToast({ hostName: tab.hostName, kind: 'error', text: e.message });
     });
     const offLog = ws.on('terminal:log', (e) => {
       if (e.reqId !== tab.id) return;
-      term.write(`\r\n\x1b[38;5;245m[连接] ${e.message}\x1b[0m\r\n`);
+      setConnBadge({ kind: 'connecting', text: e.message });
     });
 
     // agent 会话视图：实时镜像 MCP 执行的命令与输出；后台命令完成时通知
@@ -362,16 +372,18 @@ export default function TerminalView({ tab }: { tab: TerminalTab }) {
         })
       : () => {};
 
-    // agent 会话结束 → 只读提示
+    // agent 会话结束 → 只读徽标（不写入终端）
     if (tab.ended) {
-      term.write('\r\n\x1b[38;5;244m[会话已结束 · 只读视图，可查看历史输出]\x1b[0m\r\n');
+      setConnBadge({ kind: 'closed', text: '会话已结束 · 只读视图' });
     }
 
     // 发起连接：web 终端新建会话；agent 会话附加到 MCP 会话
     if (isAgent && tab.sessionId && !tab.ended) {
+      setConnBadge({ kind: 'connecting', text: '附加会话中…' });
       ws.send({ type: 'terminal:attach', reqId: tab.id, sessionId: tab.sessionId, cols: term.cols, rows: term.rows });
     } else if (!isAgent) {
       // 持久会话：tmuxId = tab.id（重连 attach 恢复现场）
+      setConnBadge({ kind: 'connecting', text: '连接中…' });
       ws.send({
         type: 'terminal:open',
         reqId: tab.id,
@@ -394,6 +406,7 @@ export default function TerminalView({ tab }: { tab: TerminalTab }) {
       offActivity();
       clearTimeout(pwdTimerRef.current);
       clearTimeout(autoTimerRef.current);
+      window.clearTimeout(badgeTimerRef.current);
       closeCompletion();
       if (streamIdRef.current) {
         const unloading = (window as unknown as { __taUnloading?: boolean }).__taUnloading;
@@ -443,6 +456,23 @@ export default function TerminalView({ tab }: { tab: TerminalTab }) {
   return (
     <div className="relative h-full w-full">
       <div ref={containerRef} className="h-full w-full" />
+      {/* 连接状态徽标（不写入终端文本；connected 2s 淡出，error/closed 常驻） */}
+      {connBadge && (
+        <div
+          className={`pointer-events-none absolute top-1 left-8 z-30 max-w-72 truncate rounded-sm border px-1.5 py-0.5 text-[10px] ${
+            connBadge.kind === 'connecting'
+              ? 'animate-pulse border-[#cca700]/60 bg-[#3b3116]/95 text-[#cca700]'
+              : connBadge.kind === 'connected'
+                ? 'border-[#4ec9b0]/60 bg-[#14352e]/95 text-[#4ec9b0]'
+                : connBadge.kind === 'error'
+                  ? 'border-[#f14c4c]/60 bg-[#3b1d1d]/95 text-[#f14c4c]'
+                  : 'border-[#5a5a5a]/60 bg-[#252526]/95 text-[#858585]'
+          }`}
+          title={connBadge.text}
+        >
+          {connBadge.text}
+        </div>
+      )}
       {/* 回放入口（hover 显示） */}
       <button
         title="回放本次会话"
