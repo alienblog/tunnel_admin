@@ -709,12 +709,19 @@ function SftpSideBar() {
   /** shell 单引号转义 */
   const shellQuote = (s: string): string => `'${s.replace(/'/g, `'\\''`)}'`;
 
-  /** 跳转：在激活终端执行 cd，文件树跟随 */
+  /** 跳转：在激活终端执行 cd，文件树跟随（无活动终端时回退到该主机已连接的终端并激活） */
   const jumpTo = (dirPath: string): void => {
     const st = useStore.getState();
-    const tab = st.tabs.find((t) => t.id === st.activeTabId);
+    const active = st.tabs.find((t) => t.id === st.activeTabId);
+    // 优先活动终端；否则该主机任意已连接终端（覆盖恢复会话后 activeTabId 为空的情况）
+    const tab = (active?.streamId ? active : st.tabs.find((t) => String(t.hostId) === hostId && t.streamId)) ?? active;
     if (tab?.streamId) {
       ws.send({ type: 'terminal:input', streamId: tab.streamId, data: `cd ${shellQuote(dirPath)}\r` });
+      // 切回该主机的外层 tab（cd 结果立即可见）
+      useStore.getState().openHostOuter(String(tab.hostId));
+      if (st.activeTabId !== tab.id) st.setActiveTab(tab.id);
+    } else {
+      st.pushToast({ hostName: '文件', kind: 'warning', text: '没有已连接的终端，无法执行 cd（请先打开终端）' });
     }
     setSftp({ path: dirPath || '/', selectedPath: dirPath || '/' });
     setCtx(null);
