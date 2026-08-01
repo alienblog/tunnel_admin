@@ -1,34 +1,14 @@
 import { useEffect, useRef, useState } from 'react';
 import { Terminal } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
+import { SearchAddon } from '@xterm/addon-search';
 import '@xterm/xterm/css/xterm.css';
+import { THEMES } from '../themes';
+import ReplayOverlay from './ReplayOverlay';
 import { api } from '../api';
 import { ws } from '../ws';
 import { useStore, type TerminalTab } from '../store';
 
-const THEME = {
-  background: '#1e1e1e',
-  foreground: '#cccccc',
-  cursor: '#aeafad',
-  cursorAccent: '#1e1e1e',
-  selectionBackground: '#264f78',
-  black: '#000000',
-  red: '#cd3131',
-  green: '#0dbc79',
-  yellow: '#e5e510',
-  blue: '#2472c8',
-  magenta: '#bc3fbc',
-  cyan: '#11a8cd',
-  white: '#e5e5e5',
-  brightBlack: '#666666',
-  brightRed: '#f14c4c',
-  brightGreen: '#23d18b',
-  brightYellow: '#f5f543',
-  brightBlue: '#3b8eea',
-  brightMagenta: '#d670d6',
-  brightCyan: '#29b8db',
-  brightWhite: '#e5e5e5',
-};
 
 interface CompletionItem {
   text: string;
@@ -95,6 +75,15 @@ export default function TerminalView({ tab }: { tab: TerminalTab }) {
   const pwdTimerRef = useRef<number | undefined>(undefined);
 
   const [completion, setCompletion] = useState<CompletionState | null>(null);
+  // 搜索状态
+  const searchAddonRef = useRef<SearchAddon | null>(null);
+  const [searchOpen, setSearchOpen] = useState(false);
+  const [searchTerm, setSearchTerm] = useState('');
+  const [searchInfo, setSearchInfo] = useState('');
+  const themeName = useStore((s) => s.terminalTheme);
+  // 录制缓冲（帧：相对时间戳 + 数据，cap 10000）
+  const recordingRef = useRef<Array<{ t: number; data: string }>>([]);
+  const [replayOpen, setReplayOpen] = useState(false);
 
   const isActive = activeTabId === tab.id;
   const isAgent = tab.kind === 'agent';
@@ -181,12 +170,15 @@ export default function TerminalView({ tab }: { tab: TerminalTab }) {
       cursorBlink: true,
       fontSize: 13,
       fontFamily: 'Menlo, Consolas, "Courier New", monospace',
-      theme: THEME,
+      theme: THEMES[useStore.getState().terminalTheme] ?? THEMES['dark-plus'],
       scrollback: 10000,
       allowProposedApi: true,
     });
     const fit = new FitAddon();
     term.loadAddon(fit);
+    const search = new SearchAddon();
+    term.loadAddon(search);
+    searchAddonRef.current = search;
     term.open(container);
     termRef.current = term;
     fitRef.current = fit;
@@ -209,6 +201,11 @@ export default function TerminalView({ tab }: { tab: TerminalTab }) {
     // 输入：补全拦截 + 缓冲维护 + 终端发送
     const onData = term.onData((d) => {
       if (tab.ended) return;
+      // Ctrl+F：打开搜索
+      if (d === '\x06') {
+        setSearchOpen(true);
+        return;
+      }
       const comp = completionRef.current;
 
       // 浮层打开时的按键拦截
@@ -275,6 +272,10 @@ export default function TerminalView({ tab }: { tab: TerminalTab }) {
         cursorRef.current = 0;
         closeCompletion();
       } else if (!d.startsWith('\x1b')) {
+        // 多行粘贴确认（防误操作）
+        if (d.length > 1 && /[\r\n]/.test(d)) {
+          if (!window.confirm(`检测到多行粘贴（${d.length} 字符），确认发送到终端？`)) return;
+        }
         const cur = cursorRef.current;
         cmdBufRef.current = cmdBufRef.current.slice(0, cur) + d + cmdBufRef.current.slice(cur);
         cursorRef.current = cur + d.length;
@@ -290,6 +291,10 @@ export default function TerminalView({ tab }: { tab: TerminalTab }) {
     const offData = ws.on('terminal:data', (e) => {
       if (e.streamId !== streamIdRef.current) return;
       term.write(e.data);
+      // 录制：记录相对时间戳（供回放）
+      const rec = recordingRef.current;
+      rec.push({ t: Date.now(), data: e.data });
+      if (rec.length > 10000) rec.shift();
       // 等待 pwd 输出：首个以 / 开头且无空格的完整行即当前路径 → 文件树定位 + 校正 cwd
       if (pwdPendingRef.current) {
         pwdBufRef.current += e.data;
@@ -366,7 +371,15 @@ export default function TerminalView({ tab }: { tab: TerminalTab }) {
     if (isAgent && tab.sessionId && !tab.ended) {
       ws.send({ type: 'terminal:attach', reqId: tab.id, sessionId: tab.sessionId, cols: term.cols, rows: term.rows });
     } else if (!isAgent) {
-      ws.send({ type: 'terminal:open', reqId: tab.id, hostId: tab.hostId, cols: term.cols, rows: term.rows });
+      // 持久会话：tmuxId = tab.id（重连 attach 恢复现场）
+      ws.send({
+        type: 'terminal:open',
+        reqId: tab.id,
+        hostId: tab.hostId,
+        cols: term.cols,
+        rows: term.rows,
+        tmuxId: tab.id,
+      });
     }
 
     return () => {
@@ -382,7 +395,15 @@ export default function TerminalView({ tab }: { tab: TerminalTab }) {
       clearTimeout(pwdTimerRef.current);
       clearTimeout(autoTimerRef.current);
       closeCompletion();
-      if (streamIdRef.current) ws.send({ type: 'terminal:close', streamId: streamIdRef.current });
+      if (streamIdRef.current) {
+        const unloading = (window as unknown as { __taUnloading?: boolean }).__taUnloading;
+        ws.send({
+          type: 'terminal:close',
+          streamId: streamIdRef.current,
+          // 页面刷新/关闭时不销毁 tmux（会话保持，重连恢复）；仅用户主动关闭 tab 才销毁
+          ...(tab.kind === 'web' && !unloading ? { tmuxId: tab.id } : {}),
+        });
+      }
       term.dispose();
       termRef.current = null;
       fitRef.current = null;
@@ -398,6 +419,13 @@ export default function TerminalView({ tab }: { tab: TerminalTab }) {
       termRef.current.write('\r\n\x1b[38;5;244m[会话已结束 · 只读视图，可查看历史输出]\x1b[0m\r\n');
     }
   }, [tab.ended]);
+
+  // 主题切换：更新现有终端的 theme
+  useEffect(() => {
+    if (termRef.current) {
+      termRef.current.options.theme = THEMES[themeName] ?? THEMES['dark-plus'];
+    }
+  }, [themeName]);
 
   // 从隐藏切换回可见时重新适配尺寸
   useEffect(() => {
@@ -415,6 +443,70 @@ export default function TerminalView({ tab }: { tab: TerminalTab }) {
   return (
     <div className="relative h-full w-full">
       <div ref={containerRef} className="h-full w-full" />
+      {/* 回放入口（hover 显示） */}
+      <button
+        title="回放本次会话"
+        onClick={() => setReplayOpen(true)}
+        className="absolute top-1 left-1 z-30 hidden rounded-sm border border-[#3c3c3c] bg-[#252526]/90 px-1.5 py-0.5 text-[10px] text-[#858585] hover:text-white group-hover:block"
+      >
+        ⏵ 回放
+      </button>
+      {/* 搜索浮层 */}
+      {searchOpen && (
+        <div className="absolute top-1 right-1 z-50 flex items-center gap-1 rounded-sm border border-[#3c3c3c] bg-[#252526] px-1.5 py-1 shadow-2xl">
+          <input
+            autoFocus
+            value={searchTerm}
+            placeholder="搜索…"
+            onChange={(e) => {
+              setSearchTerm(e.target.value);
+              if (e.target.value) {
+                const found = searchAddonRef.current?.findNext(e.target.value) ?? false;
+                setSearchInfo(found ? '已找到' : '无结果');
+              } else {
+                setSearchInfo('');
+              }
+            }}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') {
+                const found = searchAddonRef.current?.findNext(searchTerm) ?? false;
+                setSearchInfo(found ? '已找到' : '无结果');
+              }
+              if (e.key === 'Escape') setSearchOpen(false);
+            }}
+            className="w-32 rounded-sm border border-[#3c3c3c] bg-[#1e1e1e] px-1.5 py-0.5 text-[11px] text-[#cccccc] outline-none focus:border-[#007acc]"
+          />
+          <button
+            title="上一个"
+            onClick={() => {
+              const found = searchAddonRef.current?.findPrevious(searchTerm) ?? false;
+              setSearchInfo(found ? '已找到' : '无结果');
+            }}
+            className="rounded-sm px-1.5 text-[#858585] hover:bg-[#3a3d41] hover:text-white"
+          >
+            ↑
+          </button>
+          <button
+            title="下一个"
+            onClick={() => {
+              const found = searchAddonRef.current?.findNext(searchTerm) ?? false;
+              setSearchInfo(found ? '已找到' : '无结果');
+            }}
+            className="rounded-sm px-1.5 text-[#858585] hover:bg-[#3a3d41] hover:text-white"
+          >
+            ↓
+          </button>
+          <span className="min-w-8 text-center text-[10px] text-[#5a5a5a]">{searchInfo}</span>
+          <button
+            title="关闭"
+            onClick={() => setSearchOpen(false)}
+            className="rounded-sm px-1.5 text-[#858585] hover:bg-[#3a3d41] hover:text-white"
+          >
+            ×
+          </button>
+        </div>
+      )}
+
       {/* 补全浮层 */}
       {completion && (
         <div
@@ -457,6 +549,14 @@ export default function TerminalView({ tab }: { tab: TerminalTab }) {
             ↑↓ 选择 · Enter 确认 · Esc 关闭
           </div>
         </div>
+      )}
+      {/* 回放播放器 */}
+      {replayOpen && recordingRef.current.length > 0 && (
+        <ReplayOverlay
+          frames={recordingRef.current.map((f) => ({ t: f.t - recordingRef.current[0].t, data: f.data }))}
+          hostName={tab.hostName}
+          onClose={() => setReplayOpen(false)}
+        />
       )}
     </div>
   );

@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { api, type AuditEntry, type ForwardRec, type Host, type McpToken, type SftpItem } from '../api';
+import { api, type AuditEntry, type CmdRule, type ForwardRec, type Host, type McpToken, type SftpItem } from '../api';
 import { useStore, type View } from '../store';
 import { ws } from '../ws';
 import HostForm from './HostForm';
+import { THEME_NAMES } from '../themes';
 
 /** VSCode 风格侧边栏：活动栏切换的视图内容全部在此，编辑区（终端）保持不变 */
 
@@ -748,11 +749,101 @@ function AuditSideBar() {
   );
 }
 
+/** 告警阈值配置（localStorage 持久） */
+function AlertThresholds() {
+  const alertThresholds = useStore((s) => s.alertThresholds);
+  const setAlertThresholds = useStore((s) => s.setAlertThresholds);
+
+  useEffect(() => {
+    // 载入本地保存的阈值
+    try {
+      const saved = localStorage.getItem('ta-alert-thresholds');
+      if (saved) setAlertThresholds(JSON.parse(saved));
+    } catch {
+      // 忽略
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const set = (key: 'cpu' | 'mem' | 'disk', v: string): void => {
+    const n = Math.min(100, Math.max(1, parseInt(v, 10) || 90));
+    const next = { ...alertThresholds, [key]: n };
+    setAlertThresholds(next);
+    localStorage.setItem('ta-alert-thresholds', JSON.stringify(next));
+  };
+
+  const rows: Array<[keyof typeof alertThresholds, string]> = [
+    ['cpu', 'CPU'],
+    ['mem', '内存'],
+    ['disk', '磁盘'],
+  ];
+  return (
+    <div className="flex flex-col gap-1.5">
+      {rows.map(([key, label]) => (
+        <label key={key} className="flex items-center gap-2 text-[11px] text-[#858585]">
+          <span className="w-8">{label}</span>
+          <input
+            type="number"
+            min={1}
+            max={100}
+            value={alertThresholds[key]}
+            onChange={(e) => set(key, e.target.value)}
+            className="w-16 rounded-sm border border-[#3c3c3c] bg-[#1e1e1e] px-1.5 py-0.5 text-[11px] text-[#cccccc] outline-none focus:border-[#007acc]"
+          />
+          <span>%</span>
+        </label>
+      ))}
+      <div className="text-[10px] text-[#5a5a5a]">指标超限时状态栏弹出提醒（恢复后重置）</div>
+    </div>
+  );
+}
+
 function SettingsSideBar() {
+  const themeName = useStore((s) => s.terminalTheme);
+  const setTerminalTheme = useStore((s) => s.setTerminalTheme);
   const [tokens, setTokens] = useState<McpToken[]>([]);
   const [name, setName] = useState('');
   const [created, setCreated] = useState<string | null>(null);
   const [error, setError] = useState('');
+  // 命令规则
+  const [rules, setRules] = useState<CmdRule[]>([]);
+  const [rulePattern, setRulePattern] = useState('');
+  const [ruleAction, setRuleAction] = useState<'block' | 'approve'>('block');
+  const [ruleNote, setRuleNote] = useState('');
+
+  const loadRules = useCallback(async (): Promise<void> => {
+    try {
+      setRules(await api<CmdRule[]>('/api/cmd-rules'));
+    } catch {
+      // 忽略
+    }
+  }, []);
+
+  useEffect(() => {
+    void loadRules();
+  }, [loadRules]);
+
+  const addRule = async (e: React.FormEvent): Promise<void> => {
+    e.preventDefault();
+    if (!rulePattern.trim()) return;
+    try {
+      await api('/api/cmd-rules', { method: 'POST', body: JSON.stringify({ pattern: rulePattern, action: ruleAction, note: ruleNote }) });
+      setRulePattern('');
+      setRuleNote('');
+      await loadRules();
+    } catch (err) {
+      setError((err as Error).message);
+    }
+  };
+
+  const removeRule = async (id: number): Promise<void> => {
+    try {
+      await api(`/api/cmd-rules/${id}`, { method: 'DELETE' });
+      await loadRules();
+    } catch {
+      // 忽略
+    }
+  };
 
   const load = useCallback(async (): Promise<void> => {
     try {
@@ -824,6 +915,82 @@ function SettingsSideBar() {
           </div>
         ))}
         {tokens.length === 0 && <div className="px-3 py-1 text-[12px] text-[#5a5a5a]">暂无 Token</div>}
+      </div>
+
+      <div className={`border-t border-[#1e1e1e] ${sectionCls}`}>终端主题</div>
+      <div className="px-3 pb-2">
+        <div className="flex flex-col gap-1.5">
+          {Object.entries(THEME_NAMES).map(([key, label]) => (
+            <label key={key} className="flex cursor-pointer items-center gap-2 text-[11px] text-[#858585]">
+              <input
+                type="radio"
+                name="terminal-theme"
+                checked={themeName === key}
+                onChange={() => {
+                  setTerminalTheme(key);
+                  localStorage.setItem('ta-terminal-theme', key);
+                }}
+                className="accent-[#007acc]"
+              />
+              {label}
+            </label>
+          ))}
+        </div>
+      </div>
+
+      <div className={`border-t border-[#1e1e1e] ${sectionCls}`}>告警阈值</div>
+      <div className="px-3 pb-2">
+        <AlertThresholds />
+      </div>
+
+      <div className={`border-t border-[#1e1e1e] ${sectionCls}`}>危险命令规则</div>
+      <div className="px-3 pb-2 text-[11px] leading-relaxed text-[#5a5a5a]">
+        MCP 执行匹配规则的命令时：拦截（block）或弹窗审批（approve）
+      </div>
+      {error && <div className="px-3 pb-1 text-[11px] text-[#f14c4c]">{error}</div>}
+      <form onSubmit={addRule} className="flex flex-col gap-1.5 px-3 pb-2">
+        <input
+          value={rulePattern}
+          onChange={(e) => setRulePattern(e.target.value)}
+          placeholder="正则，如 ^\\s*rm\\s+-rf\\s+/ "
+          className="rounded-sm border border-[#3c3c3c] bg-[#1e1e1e] px-2 py-1 font-mono text-[11px] text-[#cccccc] outline-none focus:border-[#007acc]"
+        />
+        <div className="flex gap-1.5">
+          <select
+            value={ruleAction}
+            onChange={(e) => setRuleAction(e.target.value as 'block' | 'approve')}
+            className="rounded-sm border border-[#3c3c3c] bg-[#1e1e1e] px-1.5 py-1 text-[11px] text-[#cccccc] outline-none"
+          >
+            <option value="block">拦截</option>
+            <option value="approve">审批</option>
+          </select>
+          <input
+            value={ruleNote}
+            onChange={(e) => setRuleNote(e.target.value)}
+            placeholder="说明"
+            className="min-w-0 flex-1 rounded-sm border border-[#3c3c3c] bg-[#1e1e1e] px-2 py-1 text-[11px] text-[#cccccc] outline-none focus:border-[#007acc]"
+          />
+          <button type="submit" className="shrink-0 rounded-sm bg-[#0e639c] px-2 py-1 text-[11px] text-white hover:bg-[#1177bb]">＋</button>
+        </div>
+      </form>
+      <div className="min-h-0 flex-1 overflow-y-auto pb-2">
+        {rules.map((r) => (
+          <div key={r.id} className="group flex items-center gap-1.5 rounded-sm px-2 py-[3px] text-[11px] hover:bg-[#2a2d2e]">
+            <span className={r.action === 'block' ? 'shrink-0 text-[#f14c4c]' : 'shrink-0 text-[#cca700]'}>
+              {r.action === 'block' ? '⛔' : '⚠'}
+            </span>
+            <span className="min-w-0 flex-1 truncate font-mono text-[#9cdcfe]">{r.pattern}</span>
+            <span className="hidden shrink-0 text-[#5a5a5a] group-hover:inline">{r.note}</span>
+            <button
+              title="删除"
+              className="hidden shrink-0 rounded px-1 text-[#858585] hover:bg-[#f14c4c]/20 hover:text-[#f14c4c] group-hover:block"
+              onClick={() => void removeRule(r.id)}
+            >
+              ×
+            </button>
+          </div>
+        ))}
+        {rules.length === 0 && <div className="px-3 py-1 text-[12px] text-[#5a5a5a]">暂无规则</div>}
       </div>
     </div>
   );

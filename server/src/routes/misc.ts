@@ -33,8 +33,51 @@ export function registerAudit(app: FastifyInstance, config: Config, db: Database
   });
 }
 
-export function registerSessions(app: FastifyInstance, config: Config, manager: SshManager): void {
-  app.get('/api/sessions', async (req, reply) => {
+export interface CmdRule {
+  id: number;
+  pattern: string;
+  action: 'block' | 'approve';
+  note: string;
+}
+
+/** 危险命令规则 CRUD */
+export function registerCmdRules(app: FastifyInstance, config: Config, db: Database.Database): void {
+  app.get('/api/cmd-rules', async (req, reply) => {
+    if (!requireAuth(req, reply, config)) return;
+    return db.prepare('SELECT * FROM cmd_rules ORDER BY id').all() as CmdRule[];
+  });
+
+  app.post('/api/cmd-rules', async (req, reply) => {
+    if (!requireAuth(req, reply, config)) return;
+    const body = req.body as { pattern?: string; action?: string; note?: string } | null;
+    const pattern = body?.pattern?.trim();
+    if (!pattern) return reply.code(400).send({ error: '规则模式不能为空' });
+    const action = body?.action === 'block' ? 'block' : 'approve';
+    // 校验正则合法性
+    try {
+      new RegExp(pattern);
+    } catch {
+      return reply.code(400).send({ error: '正则表达式无效' });
+    }
+    try {
+      const r = db
+        .prepare('INSERT INTO cmd_rules (pattern, action, note) VALUES (?, ?, ?)')
+        .run(pattern, action, body?.note ?? '');
+      return db.prepare('SELECT * FROM cmd_rules WHERE id = ?').get(r.lastInsertRowid);
+    } catch {
+      return reply.code(400).send({ error: '规则已存在' });
+    }
+  });
+
+  app.delete('/api/cmd-rules/:id', async (req, reply) => {
+    if (!requireAuth(req, reply, config)) return;
+    const id = Number((req.params as { id: string }).id);
+    db.prepare('DELETE FROM cmd_rules WHERE id = ?').run(id);
+    return { ok: true };
+  });
+}
+
+export function registerSessions(app: FastifyInstance, config: Config, manager: SshManager): void {  app.get('/api/sessions', async (req, reply) => {
     if (!requireAuth(req, reply, config)) return;
     return manager
       .list()

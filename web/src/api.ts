@@ -43,8 +43,17 @@ export interface ApprovalInfo {
   port: number;
   username: string;
   source: string;
+  kind: 'connect' | 'command';
+  command?: string;
   status: 'pending' | 'approved' | 'rejected' | 'expired';
   createdAt: string;
+}
+
+export interface CmdRule {
+  id: number;
+  pattern: string;
+  action: 'block' | 'approve';
+  note: string;
 }
 
 export interface AuditEntry {

@@ -6,7 +6,7 @@ export type ServerEvent =
   | { type: 'terminal:ready'; reqId: string; streamId: string; sessionId: string }
   | { type: 'terminal:error'; reqId?: string; message: string }
   | { type: 'terminal:log'; reqId: string; message: string }
-  | { type: 'approval:new'; approvalId: number; hostName: string; host: string; port: number; username: string; source: string }
+  | { type: 'approval:new'; approvalId: number; hostName: string; host: string; port: number; username: string; source: string; kind: 'connect' | 'command'; command?: string }
   | { type: 'approval:resolved'; approvalId: number; result: 'approved' | 'rejected' | 'expired' }
   | { type: 'sessions:update'; sessions: SessionInfo[] }
   | {
@@ -33,11 +33,11 @@ export interface SessionInfo {
 }
 
 export type ClientMsg =
-  | { type: 'terminal:open'; reqId: string; hostId: number; cols: number; rows: number }
+  | { type: 'terminal:open'; reqId: string; hostId: number; cols: number; rows: number; tmuxId?: string }
+  | { type: 'terminal:close'; streamId: string; tmuxId?: string }
   | { type: 'terminal:attach'; reqId: string; sessionId: string; cols: number; rows: number }
   | { type: 'terminal:input'; streamId: string; data: string }
   | { type: 'terminal:resize'; streamId: string; cols: number; rows: number }
-  | { type: 'terminal:close'; streamId: string };
 
 type Handler = (evt: ServerEvent) => void;
 

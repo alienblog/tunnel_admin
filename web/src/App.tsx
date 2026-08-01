@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { api, type ApprovalInfo } from './api';
 import { ws, type SessionInfo } from './ws';
 import { useStore, type HostMetrics, type Toast, type View } from './store';
@@ -96,14 +96,31 @@ function fmtRate(n: number): string {
   return `${n.toFixed(0)}B/s`;
 }
 
+function Sparkline({ data, color }: { data: number[]; color: string }) {
+  if (data.length < 2) return null;
+  const max = Math.max(...data, 1);
+  const min = Math.min(...data, 0);
+  const range = max - min || 1;
+  const w = 130;
+  const h = 26;
+  const pts = data.map((v, i) => `${((i / (data.length - 1)) * w).toFixed(1)},${(h - ((v - min) / range) * h).toFixed(1)}`);
+  return (
+    <svg width={w} height={h} className="overflow-visible">
+      <polyline points={pts.join(' ')} fill="none" stroke={color} strokeWidth="1.5" strokeLinejoin="round" />
+    </svg>
+  );
+}
+
 function MetricsBar() {
   const metrics = useStore((s) => s.metrics);
   const activeTabId = useStore((s) => s.activeTabId);
   // 原始值 selector（对象/数组每次都是新引用会触发无限重渲染）
   const activeHostName = useStore((s) => s.tabs.find((t) => t.id === s.activeTabId)?.hostName ?? null);
   const activeHostId = useStore((s) => s.tabs.find((t) => t.id === s.activeTabId)?.hostId ?? null);
-
-  const activeHostIdRef = activeHostId; // 供轮询使用
+  // 指标历史（环形缓冲，每主机独立）与告警去重标记
+  const histRef = useRef<Record<number, { cpu: number[]; mem: number[]; rx: number[]; tx: number[] }>>({});
+  const alertedRef = useRef<Record<string, boolean>>({});
+  const [hist, setHist] = useState<{ cpu: number[]; mem: number[]; rx: number[]; tx: number[] } | null>(null);
 
   useEffect(() => {
     const poll = async (): Promise<void> => {
@@ -111,11 +128,49 @@ function MetricsBar() {
       const tab = st.tabs.find((t) => t.id === st.activeTabId);
       if (!tab) {
         st.setMetrics(null);
+        setHist(null);
         return;
       }
       try {
         const m = await api<HostMetrics>(`/api/metrics?hostId=${tab.hostId}`);
         st.setMetrics(m);
+        // 历史缓冲（cap 60 点 ≈ 3 分钟）
+        const h = histRef.current[tab.hostId] ?? { cpu: [], mem: [], rx: [], tx: [] };
+        const memPct = m.mem.total > 0 ? (m.mem.used / m.mem.total) * 100 : 0;
+        const diskTotal = m.disks.reduce((a, d) => a + d.total, 0);
+        const diskPct = diskTotal > 0 ? (m.disks.reduce((a, d) => a + d.used, 0) / diskTotal) * 100 : 0;
+        h.cpu.push(m.cpu ?? 0);
+        h.mem.push(memPct);
+        h.rx.push(m.net.rxRate);
+        h.tx.push(m.net.txRate);
+        if (h.cpu.length > 60) {
+          h.cpu.shift();
+          h.mem.shift();
+          h.rx.shift();
+          h.tx.shift();
+        }
+        histRef.current[tab.hostId] = h;
+        if (tab.id === st.activeTabId) setHist({ cpu: [...h.cpu], mem: [...h.mem], rx: [...h.rx], tx: [...h.tx] });
+        // 告警检查（超限通知一次，恢复后重置）
+        const th = st.alertThresholds;
+        const checks: Array<[string, number, number]> = [
+          ['cpu', m.cpu ?? 0, th.cpu],
+          ['mem', memPct, th.mem],
+          ['disk', diskPct, th.disk],
+        ];
+        for (const [key, val, limit] of checks) {
+          const flag = `${tab.hostId}:${key}`;
+          if (val >= limit && !alertedRef.current[flag]) {
+            alertedRef.current[flag] = true;
+            st.pushToast({
+              hostName: tab.hostName,
+              kind: 'warning',
+              text: `${key.toUpperCase()} 超过阈值 ${limit}%（当前 ${val.toFixed(0)}%）`,
+            });
+          } else if (val < limit - 5 && alertedRef.current[flag]) {
+            alertedRef.current[flag] = false;
+          }
+        }
       } catch {
         // 保留上次数据
       }
@@ -124,7 +179,7 @@ function MetricsBar() {
     const timer = setInterval(() => void poll(), 3000);
     return () => clearInterval(timer);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeTabId, activeHostIdRef]);
+  }, [activeTabId, activeHostId]);
 
   if (!activeHostName || !metrics) return null;
   const memPct = metrics.mem.total > 0 ? Math.round((metrics.mem.used / metrics.mem.total) * 100) : 0;
@@ -192,6 +247,24 @@ function MetricsBar() {
             <span className="shrink-0">RX {fmtBytes(i.rx)} · TX {fmtBytes(i.tx)}</span>
           </div>
         ))}
+        {/* 历史趋势（近 3 分钟） */}
+        {hist && hist.cpu.length >= 2 && (
+          <div className="mt-2 border-t border-[#3c3c3c] pt-2">
+            <div className="mb-1 text-[#858585]">近 3 分钟趋势</div>
+            <div className="flex items-center justify-between">
+              <span className="text-[10px] text-[#5a5a5a]">CPU</span>
+              <Sparkline data={hist.cpu} color="#4fc1ff" />
+            </div>
+            <div className="flex items-center justify-between">
+              <span className="text-[10px] text-[#5a5a5a]">内存</span>
+              <Sparkline data={hist.mem} color="#4ec9b0" />
+            </div>
+            <div className="flex items-center justify-between">
+              <span className="text-[10px] text-[#5a5a5a]">网络↓</span>
+              <Sparkline data={hist.rx} color="#cca700" />
+            </div>
+          </div>
+        )}
       </div>
     </div>
   );
@@ -227,6 +300,8 @@ export default function App() {
     api<{ authenticated: boolean }>('/api/me')
       .then((r) => {
         if (r.authenticated) {
+          // 先恢复工作区（必须在 setAuthed 之前：setAuthed 会触发持久化订阅，避免空状态覆盖已保存数据）
+          useStore.getState().restoreWorkspace();
           useStore.getState().setAuthed(true);
           ws.connect();
           void useStore.getState().loadHosts();
@@ -264,6 +339,8 @@ export default function App() {
         port: e.port,
         username: e.username,
         source: e.source,
+        kind: e.kind,
+        command: e.command,
         status: 'pending',
         createdAt: new Date().toISOString(),
       });
@@ -291,6 +368,27 @@ export default function App() {
       offSessions();
       ws.close();
     };
+  }, []);
+
+  useEffect(() => {
+    // 页面卸载标记：刷新/关闭时不销毁 tmux 持久会话
+    const markUnloading = (): void => {
+      (window as unknown as { __taUnloading?: boolean }).__taUnloading = true;
+    };
+    window.addEventListener('beforeunload', markUnloading);
+    window.addEventListener('pagehide', markUnloading);
+    return () => {
+      window.removeEventListener('beforeunload', markUnloading);
+      window.removeEventListener('pagehide', markUnloading);
+    };
+  }, []);
+
+  useEffect(() => {
+    // 工作区变化自动持久化（延迟一帧：避免加载流程中空状态覆盖已保存数据）
+    const unsub = useStore.subscribe((s) => {
+      setTimeout(() => s.saveWorkspace(), 0);
+    });
+    return unsub;
   }, []);
 
   if (checking) {

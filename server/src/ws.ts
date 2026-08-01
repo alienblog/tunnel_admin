@@ -14,11 +14,11 @@ import type { Config } from './config.js';
  */
 
 type ClientMsg =
-  | { type: 'terminal:open'; reqId: string; hostId: number; cols: number; rows: number }
+  | { type: 'terminal:open'; reqId: string; hostId: number; cols: number; rows: number; tmuxId?: string }
   | { type: 'terminal:attach'; reqId: string; sessionId: string; cols: number; rows: number }
   | { type: 'terminal:input'; streamId: string; data: string }
   | { type: 'terminal:resize'; streamId: string; cols: number; rows: number }
-  | { type: 'terminal:close'; streamId: string };
+  | { type: 'terminal:close'; streamId: string; tmuxId?: string };
 
 interface StreamRec {
   id: string;
@@ -30,12 +30,31 @@ interface StreamRec {
 export function registerWs(app: FastifyInstance, config: Config, manager: SshManager): void {
   const streams = new Map<string, StreamRec>();
 
-  function openShell(session: SshSession, cols: number, rows: number): Promise<Channel> {
+  /**
+   * 打开交互 shell。tmuxId 存在时通过 tmux 持久会话包装：
+   * 断开（浏览器关闭/网络中断）后会话保持，重连 attach 恢复现场。
+   * tmux 不可用时降级为普通 shell。
+   */
+  function openShell(session: SshSession, cols: number, rows: number, tmuxId?: string): Promise<Channel> {
     const { promise, resolve, reject } = Promise.withResolvers<Channel>();
-    session.client.shell({ term: 'xterm-256color', cols, rows }, (err, stream) => {
-      if (err) reject(err);
-      else resolve(stream);
-    });
+    const tmuxName = tmuxId ? `ta-${tmuxId.replace(/[^a-zA-Z0-9_-]/g, '')}` : null;
+    if (tmuxName) {
+      const cmd = [
+        `if command -v tmux >/dev/null 2>&1; then`,
+        `  tmux attach-session -t ${tmuxName} 2>/dev/null ||`,
+        `  (tmux new-session -d -s ${tmuxName} -x ${cols} -y ${rows} && tmux attach-session -t ${tmuxName});`,
+        `else exec ${process.env.SHELL ?? 'bash'} -l; fi`,
+      ].join(' ');
+      session.client.exec(cmd, { pty: { term: 'xterm-256color', cols, rows } }, (err, stream) => {
+        if (err) reject(err);
+        else resolve(stream);
+      });
+    } else {
+      session.client.shell({ term: 'xterm-256color', cols, rows }, (err, stream) => {
+        if (err) reject(err);
+        else resolve(stream);
+      });
+    }
     return promise;
   }
 
@@ -107,7 +126,7 @@ export function registerWs(app: FastifyInstance, config: Config, manager: SshMan
               { source: 'web' },
               log,
             );
-            const channel = await openShell(session, msg.cols, msg.rows);
+            const channel = await openShell(session, msg.cols, msg.rows, msg.tmuxId);
             const rec: StreamRec = { id: crypto.randomUUID(), session, channel, kind: 'open' };
             wireStream(rec);
             send({ type: 'terminal:ready', reqId: msg.reqId, streamId: rec.id, sessionId: session.id });
@@ -158,6 +177,13 @@ export function registerWs(app: FastifyInstance, config: Config, manager: SshMan
               rec.channel.end();
             } catch {
               // 已关闭
+            }
+            // 主动关闭：销毁对应的 tmux 持久会话（被动断连则保留）
+            if (msg.tmuxId) {
+              const tmuxName = `ta-${msg.tmuxId.replace(/[^a-zA-Z0-9_-]/g, '')}`;
+              rec.session.client.exec(`tmux kill-session -t ${tmuxName} 2>/dev/null`, () => {
+                // 忽略销毁结果
+              });
             }
             if (rec.kind === 'open') manager.disconnect(rec.session.id);
           }

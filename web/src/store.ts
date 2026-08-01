@@ -206,6 +206,10 @@ interface AppState {
   dragTabId: string | null;
   /** 当前活动主机的系统指标（状态栏） */
   metrics: HostMetrics | null;
+  /** 告警阈值（百分比） */
+  alertThresholds: { cpu: number; mem: number; disk: number };
+  /** 终端主题名 */
+  terminalTheme: string;
   toasts: Toast[];
   sftp: SftpState;
   hostModal: HostModalState;
@@ -253,6 +257,11 @@ interface AppState {
   setSplitRatio: (hostId: string, splitId: string, ratio: number) => void;
   setDragTab: (id: string | null) => void;
   setMetrics: (m: HostMetrics | null) => void;
+  setAlertThresholds: (t: { cpu: number; mem: number; disk: number }) => void;
+  setTerminalTheme: (t: string) => void;
+  /** 工作区持久化：布局/tab 存 localStorage（刷新后恢复，配合 tmux 恢复会话现场） */
+  saveWorkspace: () => void;
+  restoreWorkspace: () => void;
 }
 
 let tabSeq = 0;
@@ -281,6 +290,8 @@ export const useStore = create<AppState>((set, get) => ({
   activeTabId: null,
   dragTabId: null,
   metrics: null,
+  alertThresholds: { cpu: 90, mem: 90, disk: 90 },
+  terminalTheme: 'dark-plus',
   toasts: [],
   sftp: { hostId: '', path: '/', selectedPath: null, revealPath: null },
   hostModal: { open: false, editing: null },
@@ -495,4 +506,59 @@ export const useStore = create<AppState>((set, get) => ({
   },
 
   setMetrics: (metrics) => set({ metrics }),
+  setAlertThresholds: (alertThresholds) => set({ alertThresholds }),
+  setTerminalTheme: (terminalTheme) => set({ terminalTheme }),
+
+  saveWorkspace: () => {
+    const { tabs, hostLayouts, outerHost } = get();
+    // 仅持久化 web 终端（agent 会话由 MCP 管理，不恢复）
+    const webTabs = tabs
+      .filter((t) => t.kind === 'web')
+      .map((t) => ({
+        id: t.id,
+        kind: 'web' as const,
+        hostId: t.hostId,
+        hostName: t.hostName,
+        sessionId: null,
+        streamId: null,
+        status: 'connecting' as const,
+      }));
+    try {
+      localStorage.setItem('ta-workspace', JSON.stringify({ tabs: webTabs, hostLayouts, outerHost, ts: Date.now() }));
+    } catch {
+      // 存储失败忽略
+    }
+  },
+
+  restoreWorkspace: () => {
+    try {
+      const raw = localStorage.getItem('ta-workspace');
+      if (!raw) return;
+      const saved = JSON.parse(raw) as {
+        tabs: TerminalTab[];
+        hostLayouts: Record<string, LayoutNode>;
+        outerHost: string | null;
+      };
+      if (!saved?.tabs?.length || !saved.hostLayouts) return;
+      // 布局中引用已不存在 tab 的 leaf 清理掉
+      const ids = new Set(saved.tabs.map((t) => t.id));
+      const hostLayouts: Record<string, LayoutNode> = {};
+      for (const [hostId, layout] of Object.entries(saved.hostLayouts)) {
+        let cleaned: LayoutNode | null = layout;
+        for (const leaf of collectLeaves(layout)) {
+          if (!ids.has(leaf)) cleaned = removeTabFromLayout(cleaned, leaf);
+        }
+        if (cleaned) hostLayouts[hostId] = cleaned;
+      }
+      const outerHost = saved.outerHost && hostLayouts[saved.outerHost] ? saved.outerHost : (Object.keys(hostLayouts)[0] ?? null);
+      set({
+        tabs: saved.tabs,
+        hostLayouts,
+        outerHost,
+        activeTabId: null,
+      });
+    } catch {
+      // 数据损坏则忽略
+    }
+  },
 }));

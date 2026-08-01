@@ -77,6 +77,24 @@ CREATE TABLE IF NOT EXISTS approvals (
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
   resolved_at TEXT
 );
+
+CREATE TABLE IF NOT EXISTS cmd_rules (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  pattern TEXT NOT NULL UNIQUE,
+  action TEXT NOT NULL CHECK (action IN ('block','approve')),
+  note TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+-- 默认危险命令规则（可增删）
+INSERT OR IGNORE INTO cmd_rules (pattern, action, note) VALUES
+  ('^\\s*rm\\s+-rf\\s+/\\s*$', 'block', '删除根目录'),
+  ('^\\s*rm\\s+-rf\\s+~', 'block', '删除用户目录'),
+  ('mkfs', 'block', '格式化磁盘'),
+  ('dd\\s+if=', 'approve', '写入设备（确认目标）'),
+  ('(^|\\s)(shutdown|reboot|poweroff|halt)\\b', 'approve', '关机/重启'),
+  ('(^|\\s)init\\s+0', 'block', '关机'),
+  ('chmod\\s+-R\\s+777\\s+/', 'approve', '根目录权限放开');
 `;
 
 export function openDb(dataDir: string): Database.Database {
@@ -85,5 +103,7 @@ export function openDb(dataDir: string): Database.Database {
   db.pragma('journal_mode = WAL');
   db.pragma('foreign_keys = ON');
   db.exec(SCHEMA);
+  // 迁移：旧库 cmd_rules 表无 UNIQUE 约束时 seed 会重复，去重保留最小 id
+  db.exec('DELETE FROM cmd_rules WHERE id NOT IN (SELECT MIN(id) FROM cmd_rules GROUP BY pattern)');
   return db;
 }

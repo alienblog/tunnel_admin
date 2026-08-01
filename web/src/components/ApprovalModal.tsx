@@ -44,6 +44,12 @@ export default function ApprovalModal() {
             {a.username}@{a.host}:{a.port}
           </div>
           <div className="mt-1 text-xs text-slate-500">来源：{a.source === 'mcp' ? 'MCP (AI Agent)' : a.source}</div>
+          {a.kind === 'command' && a.command && (
+            <div className="mt-3 border-t border-slate-700 pt-3">
+              <div className="mb-1 font-sans text-xs text-amber-400">Agent 请求执行以下命令：</div>
+              <div className="break-all rounded bg-slate-950 p-2 text-xs text-slate-200">{a.command}</div>
+            </div>
+          )}
         </div>
         {approvals.length > 1 && (
           <div className="mt-3 text-xs text-slate-500">还有 {approvals.length - 1} 个待处理请求</div>

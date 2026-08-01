@@ -7,7 +7,7 @@ import type { Config } from '../config.js';
 import type { HostRow } from '../db.js';
 import type { SshManager, SshSession } from '../ssh/manager.js';
 import type { ApprovalService } from '../approval.js';
-import { logAudit } from '../routes/misc.js';
+import { logAudit, type CmdRule } from '../routes/misc.js';
 import { eventBus } from '../events.js';
 
 export interface McpDeps {
@@ -26,12 +26,33 @@ interface JobRecord {
   result?: unknown;
 }
 
+/** 流式任务（tail -f 等）：分片累积，支持增量拉取 */
+interface StreamJob {
+  status: 'running' | 'done';
+  chunks: Array<{ i: number; data: string }>;
+  next: number;
+  channel: import('ssh2').Channel | null;
+}
+
 // 会话状态/任务/SFTP 句柄缓存在进程级共享：无状态模式下每个请求会新建
 // McpServer + registerTools，状态必须独立于注册闭包，否则会话记忆会随请求丢失。
 const sessionStates = new Map<string, SessionState>();
 const sftpCache = new Map<string, SFTPWrapper>();
 const jobs = new Map<string, JobRecord>();
+const streamJobs = new Map<string, StreamJob>();
 const JOB_RETENTION = 50;
+
+// MCP 端口转发（远程为主）：id → 记录
+interface ForwardRec {
+  id: string;
+  sessionId: string;
+  hostName: string;
+  bindPort: number;
+  remoteHost: string;
+  remotePort: number;
+}
+const mcpForwards = new Map<string, ForwardRec>();
+let forwardSeq = 0;
 
 function text(result: unknown) {
   return {
@@ -179,6 +200,35 @@ export function registerTools(server: McpServer, deps: McpDeps): void {
     return promise;
   }
 
+  /** 危险命令检查：匹配 block 规则直接拒绝；approve 规则弹窗审批 */
+  async function checkCommandRule(
+    command: string,
+    session: SshSession,
+  ): Promise<{ error?: string }> {
+    const rules = db.prepare('SELECT * FROM cmd_rules').all() as CmdRule[];
+    for (const rule of rules) {
+      let matched: boolean;
+      try {
+        matched = new RegExp(rule.pattern).test(command);
+      } catch {
+        continue; // 非法正则跳过
+      }
+      if (!matched) continue;
+      if (rule.action === 'block') {
+        return { error: `命令被安全规则拦截（${rule.note || rule.pattern}）` };
+      }
+      // approve：人工审批
+      const host = sshManager.getHostRow(session.hostId);
+      if (!host) return { error: '主机信息缺失' };
+      const result = await approvals.requestApproval(host, 'mcp', 'command', command);
+      if (result.status !== 'approved') {
+        return { error: '命令未获批准：用户拒绝了执行' };
+      }
+      break;
+    }
+    return {};
+  }
+
   // ---- 工具注册 ----
 
   server.tool(
@@ -246,6 +296,9 @@ export function registerTools(server: McpServer, deps: McpDeps): void {
       if (error || !session) return text({ error });
 
       const timeoutMs = (params.timeout ?? config.mcpDefaultTimeoutMs / 1000) * 1000;
+      // 危险命令规则检查（block 拒绝 / approve 弹窗）
+      const ruleCheck = await checkCommandRule(params.command, session);
+      if (ruleCheck.error) return text({ error: ruleCheck.error });
       const run = async (): Promise<unknown> => {
         eventBus.broadcast({
           type: 'exec:activity',
@@ -455,6 +508,165 @@ export function registerTools(server: McpServer, deps: McpDeps): void {
       const job = jobs.get(jobId);
       if (!job) return text({ error: `任务不存在或已过期: ${jobId}` });
       return text(job);
+    },
+  );
+
+  server.tool(
+    'ssh_tail',
+    '跟踪远程文件输出：返回文件末尾内容，并开启流式跟踪（tail -f）。用 ssh_tail_poll 增量拉取新输出，ssh_tail_stop 停止。适合监控日志',
+    {
+      session: z.string().describe('会话 ID'),
+      path: z.string().describe('远程文件路径'),
+      lines: z.number().int().positive().max(500).optional().describe('初始返回末尾行数，默认 50'),
+    },
+    async (params) => {
+      const s = sshManager.get(params.session);
+      if (!s) return text({ error: `会话不存在: ${params.session}` });
+      const lines = params.lines ?? 50;
+      // 1. 同步返回末尾内容
+      const head = await execCommand(s, `tail -n ${lines} -- ${shellQuote(params.path)}`, {
+        timeoutMs: 10000,
+      });
+      if (head.exitCode !== 0) {
+        return text({ error: `读取失败: ${head.stderr || head.stdout || 'exit ' + head.exitCode}` });
+      }
+      // 2. 后台 tail -f 持续跟踪
+      const jobId = `tail-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+      const job: StreamJob = { status: 'running', chunks: [], next: 0, channel: null };
+      streamJobs.set(jobId, job);
+      s.client.exec(`tail -f -n 0 -- ${shellQuote(params.path)}`, (err, channel) => {
+        if (err) {
+          job.status = 'done';
+          return;
+        }
+        job.channel = channel;
+        channel.on('data', (d: Buffer) => {
+          job.chunks.push({ i: job.next++, data: d.toString('utf8') });
+          if (job.chunks.length > 200) job.chunks.shift();
+        });
+        channel.on('close', () => {
+          job.status = 'done';
+          job.channel = null;
+        });
+        channel.on('error', () => channel.close());
+      });
+      return text({ ok: true, jobId, content: head.stdout, exitCode: head.exitCode });
+    },
+  );
+
+  server.tool(
+    'ssh_tail_poll',
+    '增量拉取 ssh_tail 的新输出（from 之后的片段）',
+    {
+      jobId: z.string(),
+      from: z.number().int().nonnegative().describe('上次拉取到的片段序号，初始用 ssh_tail 返回的 0'),
+    },
+    async ({ jobId, from }) => {
+      const job = streamJobs.get(jobId);
+      if (!job) return text({ error: `任务不存在或已过期: ${jobId}` });
+      const chunks = job.chunks.filter((c) => c.i >= from);
+      return text({ status: job.status, next: job.next, data: chunks.map((c) => c.data).join('') });
+    },
+  );
+
+  server.tool(
+    'ssh_tail_stop',
+    '停止 ssh_tail 的流式跟踪',
+    { jobId: z.string() },
+    async ({ jobId }) => {
+      const job = streamJobs.get(jobId);
+      if (!job) return text({ error: `任务不存在: ${jobId}` });
+      if (job.channel) {
+        try {
+          job.channel.close();
+        } catch {
+          // 已关闭
+        }
+      }
+      job.status = 'done';
+      streamJobs.delete(jobId);
+      return text({ ok: true, jobId });
+    },
+  );
+
+  server.tool(
+    'ssh_port_forward',
+    '远程端口转发：把目标主机端口暴露到服务器端口（经 SSH 隧道）。服务器上的其他进程/agent 可通过 127.0.0.1:bindPort 访问',
+    {
+      session: z.string(),
+      remoteHost: z.string().describe('目标地址（远端可达即可）'),
+      remotePort: z.number().int().min(1).max(65535),
+      bindPort: z.number().int().min(1).max(65535).describe('服务器上绑定的端口'),
+    },
+    async (params) => {
+      const s = sshManager.get(params.session);
+      if (!s) return text({ error: `会话不存在: ${params.session}` });
+      try {
+        const { promise, resolve, reject } = Promise.withResolvers<void>();
+        s.client.forwardIn('127.0.0.1', params.bindPort, (err) => (err ? reject(err) : resolve()));
+        await promise;
+      } catch (err) {
+        return text({ error: `绑定端口 ${params.bindPort} 失败: ${(err as Error).message}` });
+      }
+      const rec: ForwardRec = {
+        id: `fwd-${Date.now()}-${forwardSeq++}`,
+        sessionId: s.id,
+        hostName: s.hostName,
+        bindPort: params.bindPort,
+        remoteHost: params.remoteHost,
+        remotePort: params.remotePort,
+      };
+      s.client.on('tcp connection', (_info, accept, reject) => {
+        s.client.forwardOut('127.0.0.1', 0, rec.remoteHost, rec.remotePort, (err, stream) => {
+          if (err) return reject();
+          const conn = accept();
+          conn.pipe(stream).pipe(conn);
+          conn.on('error', () => stream.destroy());
+          stream.on('error', () => conn.destroy());
+        });
+      });
+      s.client.on('close', () => {
+        mcpForwards.delete(rec.id);
+      });
+      mcpForwards.set(rec.id, rec);
+      return text({ ok: true, forwardId: rec.id, bindPort: rec.bindPort, access: `127.0.0.1:${rec.bindPort}` });
+    },
+  );
+
+  server.tool(
+    'ssh_list_forwards',
+    '列出所有活跃的 MCP 端口转发',
+    {},
+    async () => {
+      return text(
+        [...mcpForwards.values()].map((f) => ({
+          forwardId: f.id,
+          hostName: f.hostName,
+          bindPort: f.bindPort,
+          remoteHost: f.remoteHost,
+          remotePort: f.remotePort,
+        })),
+      );
+    },
+  );
+
+  server.tool(
+    'ssh_stop_forward',
+    '停止端口转发（会话断开也会自动停止）',
+    { forwardId: z.string() },
+    async ({ forwardId }) => {
+      const rec = mcpForwards.get(forwardId);
+      if (!rec) return text({ error: `转发不存在: ${forwardId}` });
+      const s = sshManager.get(rec.sessionId);
+      if (s) {
+        try {
+          s.client.unforwardIn('127.0.0.1', rec.bindPort);
+        } catch {
+          // 忽略
+        }
+      }
+      mcpForwards.delete(forwardId);
+      return text({ ok: true, forwardId });
     },
   );
 }

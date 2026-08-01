@@ -10,6 +10,10 @@ export interface ApprovalInfo {
   port: number;
   username: string;
   source: string;
+  /** connect = 主机连接；command = 危险命令执行 */
+  kind: 'connect' | 'command';
+  /** command 类审批的命令内容 */
+  command?: string;
   status: 'pending' | 'approved' | 'rejected' | 'expired';
   createdAt: string;
 }
@@ -39,8 +43,8 @@ export class ApprovalService {
     this.timeoutMs = timeoutMs;
   }
 
-  /** 发起一次审批，阻塞直到用户响应或超时 */
-  requestApproval(host: HostRow, source: string): Promise<ApprovalResult> {
+  /** 发起一次审批，阻塞直到用户响应或超时。kind=command 时携带命令内容 */
+  requestApproval(host: HostRow, source: string, kind: 'connect' | 'command' = 'connect', command?: string): Promise<ApprovalResult> {
     const createdAt = new Date().toISOString();
     const row = this.db
       .prepare('INSERT INTO approvals (host_id, source, status, created_at) VALUES (?, ?, ?, ?)')
@@ -54,6 +58,8 @@ export class ApprovalService {
       port: host.port,
       username: host.username,
       source,
+      kind,
+      command,
       status: 'pending',
       createdAt,
     };
@@ -66,6 +72,8 @@ export class ApprovalService {
       port: info.port,
       username: info.username,
       source,
+      kind,
+      command,
     });
 
     const { promise, resolve } = Promise.withResolvers<ApprovalResult>();
