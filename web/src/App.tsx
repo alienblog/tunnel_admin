@@ -531,7 +531,7 @@ function ToastStack() {
   return (
     <div
       data-testid="toast-stack"
-      className="pointer-events-none fixed right-4 bottom-8 z-40 flex w-80 flex-col gap-2"
+      className="pointer-events-none fixed top-4 right-4 z-40 flex w-80 flex-col gap-2"
     >
       {toasts.map((t) => (
         <button

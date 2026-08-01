@@ -468,11 +468,13 @@ export default function TerminalView({ tab }: { tab: TerminalTab }) {
       closeCompletion();
       if (streamIdRef.current) {
         const unloading = (window as unknown as { __taUnloading?: boolean }).__taUnloading;
+        // tab 仍存在 = 布局移动（拖拽分屏/合并）等非关闭操作：不销毁 tmux，重挂后 attach 恢复现场；
+        // tab 已移除 = 用户主动关闭：销毁 tmux 持久会话
+        const stillExists = useStore.getState().tabs.some((t) => t.id === tab.id);
         ws.send({
           type: 'terminal:close',
           streamId: streamIdRef.current,
-          // 页面刷新/关闭时不销毁 tmux（会话保持，重连恢复）；仅用户主动关闭 tab 才销毁
-          ...(tab.kind === 'web' && !unloading ? { tmuxId: tab.id } : {}),
+          ...(tab.kind === 'web' && !unloading && !stillExists ? { tmuxId: tab.id } : {}),
         });
       }
       term.dispose();

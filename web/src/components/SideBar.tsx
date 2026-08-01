@@ -841,6 +841,8 @@ function SftpSideBar() {
           className="fixed z-50 min-w-44 rounded-sm border border-[#3c3c3c] bg-[#252526] py-1 shadow-2xl"
           style={{ left: Math.min(ctx.x, window.innerWidth - 210), top: Math.min(ctx.y, window.innerHeight - 320) }}
           onContextMenu={(e) => e.preventDefault()}
+          // 阻止 mousedown 冒泡：避免「点击外部关闭菜单」监听先关菜单导致点击失效
+          onMouseDown={(e) => e.stopPropagation()}
         >
           {ctx.item.type === 'dir' && (
             <>

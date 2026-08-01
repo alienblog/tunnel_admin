@@ -222,8 +222,10 @@ function SplitView({ node, hostId }: { node: Extract<LayoutNode, { type: 'split'
 }
 
 function LayoutNodeView({ node, hostId }: { node: LayoutNode; hostId: string }) {
-  if (node.type === 'group') return <GroupPanel node={node} hostId={hostId} />;
-  return <SplitView node={node} hostId={hostId} />;
+  // key = node.id：布局重组（拖拽移动 tab / 分屏调整）时 React 按 key 保留组件实例，
+  // 未移动的终端不卸载、连接不中断
+  if (node.type === 'group') return <GroupPanel key={node.id} node={node} hostId={hostId} />;
+  return <SplitView key={node.id} node={node} hostId={hostId} />;
 }
 
 /** 外层 tab 标签图标 */
