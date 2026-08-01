@@ -84,10 +84,10 @@ function SessionSideBar() {
   const setActiveTab = useStore((s) => s.setActiveTab);
   const addTab = useStore((s) => s.addTab);
   const openHostModal = useStore((s) => s.openHostModal);
-  // 折叠状态（默认：已打开终端展开，agent 与主机折叠）
+  // 折叠状态（默认：已打开终端与主机展开，agent 折叠）
   const [openTabs, setOpenTabs] = useState(true);
   const [openAgents, setOpenAgents] = useState(false);
-  const [openHosts, setOpenHosts] = useState(false);
+  const [openHosts, setOpenHosts] = useState(true);
 
   const section = (label: string, icon: string, opened: boolean, onToggle: () => void): React.ReactNode => (
     <button
@@ -1136,12 +1136,43 @@ function ForwardSideBar() {
 }
 
 export default function SideBar({ view }: { view: View }) {
+  const sidebarWidth = useStore((s) => s.sidebarWidth);
+  const setSidebarWidth = useStore((s) => s.setSidebarWidth);
+  const dragRef = useRef<{ startX: number; startWidth: number } | null>(null);
+
+  /** 拖拽手柄：改变侧边栏宽度（200–800px） */
+  const onPointerDown = (e: React.PointerEvent): void => {
+    e.preventDefault();
+    dragRef.current = { startX: e.clientX, startWidth: sidebarWidth };
+    const move = (ev: PointerEvent): void => {
+      const d = dragRef.current;
+      if (!d) return;
+      setSidebarWidth(d.startWidth + (ev.clientX - d.startX));
+    };
+    const up = (): void => {
+      dragRef.current = null;
+      window.removeEventListener('pointermove', move);
+      window.removeEventListener('pointerup', up);
+    };
+    window.addEventListener('pointermove', move);
+    window.addEventListener('pointerup', up);
+  };
+
   return (
-    <aside className="flex w-80 shrink-0 flex-col overflow-hidden border-r border-[#1e1e1e] bg-[#252526]">
+    <aside
+      className="relative flex shrink-0 flex-col overflow-hidden border-r border-[#1e1e1e] bg-[#252526]"
+      style={{ width: sidebarWidth }}
+    >
       {view === 'terminals' && <SessionSideBar />}
       {view === 'hosts' && <HostsSideBar />}
       {view === 'sftp' && <SftpSideBar />}
       {view === 'forward' && <ForwardSideBar />}
+      {/* 拖拽手柄：调整侧边栏宽度 */}
+      <div
+        title="拖动调整侧边栏宽度"
+        onPointerDown={onPointerDown}
+        className="absolute top-0 right-0 bottom-0 z-20 w-1 cursor-col-resize bg-transparent transition-colors hover:bg-[#007acc]/60"
+      />
     </aside>
   );
 }

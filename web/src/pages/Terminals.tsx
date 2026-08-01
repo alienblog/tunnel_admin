@@ -84,7 +84,7 @@ function InnerTab({ tabId, groupId }: { tabId: string; groupId: string }) {
 /** 终端组面板：tab 栏 + 内容 + 拖拽停靠目标 */
 function GroupPanel({ node, hostId }: { node: Extract<LayoutNode, { type: 'group' }>; hostId: string }) {
   const activeTabId = node.activeTabId ?? node.tabIds[0] ?? null;
-  const tab = useStore((s) => s.tabs.find((t) => t.id === activeTabId));
+  const tabs = useStore((s) => s.tabs);
   const addTerminalToGroup = useStore((s) => s.addTerminalToGroup);
   const moveTab = useStore((s) => s.moveTab);
   const setActiveTab = useStore((s) => s.setActiveTab);
@@ -136,7 +136,7 @@ function GroupPanel({ node, hostId }: { node: Extract<LayoutNode, { type: 'group
           ＋
         </button>
       </div>
-      {/* 内容 + 拖拽停靠目标 */}
+      {/* 内容 + 拖拽停靠目标：组内所有终端保持挂载（切换 tab 不卸载、不重连），非活动隐藏 */}
       <div
         className="relative min-h-0 flex-1"
         onClick={() => activeTabId && setActiveTab(activeTabId)}
@@ -144,9 +144,17 @@ function GroupPanel({ node, hostId }: { node: Extract<LayoutNode, { type: 'group
         onDragLeave={() => setDropPos(null)}
         onDrop={onDrop}
       >
-        {tab ? (
-          <TerminalView tab={tab} />
-        ) : (
+        {node.tabIds.map((id) => {
+          const t = tabs.find((x) => x.id === id);
+          if (!t) return null;
+          const isActiveTab = activeTabId === id;
+          return (
+            <div key={id} className={`absolute inset-0 ${isActiveTab ? '' : 'hidden'}`}>
+              <TerminalView tab={t} />
+            </div>
+          );
+        })}
+        {node.tabIds.length === 0 && (
           <div className="flex h-full items-center justify-center text-[#5a5a5a]">终端已关闭</div>
         )}
         {dropPos && (

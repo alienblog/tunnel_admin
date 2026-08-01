@@ -75,6 +75,20 @@ function ActivityBar({
 
   return (
     <div className="flex w-12 shrink-0 flex-col items-center bg-[#333333] py-1">
+      {/* 顶部：侧边栏收起/展开 */}
+      <button
+        title={collapsed ? '展开侧边栏' : '收起侧边栏'}
+        onClick={() => setCollapsed(!collapsed)}
+        className={`flex h-12 w-12 items-center justify-center ${collapsed ? 'text-white' : 'text-[#858585] hover:text-white'}`}
+      >
+        <svg viewBox="0 0 16 16" className="h-5 w-5" fill="currentColor">
+          {collapsed ? (
+            <path d="M2.75 2.5A1.75 1.75 0 001 4.25v7.5c0 .966.784 1.75 1.75 1.75h3a.75.75 0 000-1.5h-3a.25.25 0 01-.25-.25v-7.5a.25.25 0 01.25-.25h3a.75.75 0 000-1.5h-3zM6.47 5.47a.75.75 0 011.06 0L10 7.94l2.47-2.47a.75.75 0 111.06 1.06l-3 3a.75.75 0 01-1.06 0l-3-3a.75.75 0 010-1.06zM14.25 12.5a.75.75 0 010 1.5h-6.5a.75.75 0 010-1.5h6.5z" />
+          ) : (
+            <path d="M2.75 2.5A1.75 1.75 0 001 4.25v7.5c0 .966.784 1.75 1.75 1.75h3a.75.75 0 000-1.5h-3a.25.25 0 01-.25-.25v-7.5a.25.25 0 01.25-.25h3a.75.75 0 000-1.5h-3zM13.53 5.47a.75.75 0 010 1.06L11.06 9l2.47 2.47a.75.75 0 11-1.06 1.06l-3-3a.75.75 0 010-1.06l3-3a.75.75 0 011.06 0zM14.25 2.5a.75.75 0 010 1.5h-6.5a.75.75 0 010-1.5h6.5z" />
+          )}
+        </svg>
+      </button>
       {NAV.map((n) => (
         <button
           key={n.view}

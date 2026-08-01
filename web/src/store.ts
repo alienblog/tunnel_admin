@@ -247,6 +247,8 @@ interface AppState {
   quickCommands: Array<{ name: string; value: string }>;
   /** 侧边栏是否收起 */
   sidebarCollapsed: boolean;
+  /** 侧边栏宽度（拖拽调整，localStorage 持久） */
+  sidebarWidth: number;
   /** 当前活动主机的系统指标（状态栏） */
   metrics: HostMetrics | null;
   /** 告警阈值（百分比） */
@@ -298,6 +300,7 @@ interface AppState {
   clearTransfers: () => void;
   setQuickCommands: (cmds: Array<{ name: string; value: string }>) => void;
   setSidebarCollapsed: (v: boolean) => void;
+  setSidebarWidth: (w: number) => void;
   /** 编辑器保存后失效 SFTP 缓存（hostId + 父目录路径） */
   invalidateSftpPath: (hostId: string, path: string) => void;
   /** 打开主机工作区（外层激活），新建终端（若已有工作区则加入第一个组） */
@@ -392,6 +395,15 @@ export const useStore = create<AppState>((set, get) => ({
   })(),
 
   sidebarCollapsed: false,
+  sidebarWidth: (() => {
+    try {
+      const v = Number(localStorage.getItem('ta-sidebar-width'));
+      if (v >= 200 && v <= 800) return v;
+    } catch {
+      // 忽略
+    }
+    return 320;
+  })(),
   metrics: null,
   alertThresholds: { cpu: 90, mem: 90, disk: 90 },
   terminalTheme: 'dark-plus',
@@ -481,6 +493,16 @@ export const useStore = create<AppState>((set, get) => ({
   },
 
   setSidebarCollapsed: (v) => set({ sidebarCollapsed: v }),
+
+  setSidebarWidth: (w) => {
+    const width = Math.min(800, Math.max(200, Math.round(w)));
+    set({ sidebarWidth: width });
+    try {
+      localStorage.setItem('ta-sidebar-width', String(width));
+    } catch {
+      // 忽略
+    }
+  },
 
   invalidateSftpPath: (hostId, path) => {
     const prefix = `${hostId}:`;
