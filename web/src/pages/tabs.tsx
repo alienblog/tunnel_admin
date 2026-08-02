@@ -514,9 +514,112 @@ function McpSettings() {
   );
 }
 
+/** 修改 Web 登录密码 */
+function PasswordSettings() {
+  const pushToast = useStore((s) => s.pushToast);
+  const [oldPassword, setOldPassword] = useState('');
+  const [newPassword, setNewPassword] = useState('');
+  const [confirm, setConfirm] = useState('');
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState('');
+  const [authRequired, setAuthRequired] = useState(true);
+
+  useEffect(() => {
+    void api<{ authRequired?: boolean }>('/api/me')
+      .then((r) => setAuthRequired(r.authRequired ?? true))
+      .catch(() => {});
+  }, []);
+
+  const submit = async (e: React.FormEvent): Promise<void> => {
+    e.preventDefault();
+    setError('');
+    if (newPassword.length < 6) {
+      setError('新密码至少 6 位');
+      return;
+    }
+    if (newPassword !== confirm) {
+      setError('两次输入的新密码不一致');
+      return;
+    }
+    setSaving(true);
+    try {
+      await api('/api/password', {
+        method: 'POST',
+        body: JSON.stringify({ oldPassword, newPassword }),
+      });
+      setOldPassword('');
+      setNewPassword('');
+      setConfirm('');
+      pushToast({
+        hostName: '设置',
+        kind: 'success',
+        text: authRequired ? '密码已修改，下次登录请使用新密码' : '密码已设置（免登录模式，重启并去掉 TUNNELADMIN_AUTH=none 后生效）',
+      });
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div className="flex flex-col gap-3">
+      <div className="text-[11px] leading-relaxed text-[#5a5a5a]">
+        {authRequired
+          ? '修改 Web 登录密码（旧密码验证后生效）'
+          : '当前为免登录模式（TUNNELADMIN_AUTH=none），设置密码后需重启服务并去掉该环境变量才生效'}
+      </div>
+      <form onSubmit={submit} className="flex max-w-sm flex-col gap-2">
+        {authRequired && (
+          <label className="flex items-center gap-2 text-[12px] text-[#cccccc]">
+            <span className="w-16 shrink-0">旧密码</span>
+            <input
+              type="password"
+              value={oldPassword}
+              onChange={(e) => setOldPassword(e.target.value)}
+              className={`${inputCls} min-w-0 flex-1`}
+              autoComplete="current-password"
+            />
+          </label>
+        )}
+        <label className="flex items-center gap-2 text-[12px] text-[#cccccc]">
+          <span className="w-16 shrink-0">新密码</span>
+          <input
+            type="password"
+            value={newPassword}
+            onChange={(e) => setNewPassword(e.target.value)}
+            className={`${inputCls} min-w-0 flex-1`}
+            autoComplete="new-password"
+          />
+        </label>
+        <label className="flex items-center gap-2 text-[12px] text-[#cccccc]">
+          <span className="w-16 shrink-0">确认密码</span>
+          <input
+            type="password"
+            value={confirm}
+            onChange={(e) => setConfirm(e.target.value)}
+            className={`${inputCls} min-w-0 flex-1`}
+            autoComplete="new-password"
+          />
+        </label>
+        {error && <div className="text-[11px] text-[#f14c4c]">{error}</div>}
+        <div>
+          <button
+            type="submit"
+            disabled={saving}
+            className="rounded-sm bg-[#0e639c] px-3 py-1 text-[12px] font-medium text-white hover:bg-[#1177bb] disabled:opacity-60"
+          >
+            {saving ? '保存中…' : '修改密码'}
+          </button>
+        </div>
+      </form>
+    </div>
+  );
+}
+
 /** 设置页：左侧分类导航 + 右侧内容 */
 export function SettingsTab() {
-  const [section, setSection] = useState<'terminal' | 'monitor' | 'mcp' | 'quick'>('terminal');
+  const [section, setSection] = useState<'terminal' | 'monitor' | 'mcp' | 'quick' | 'password'>('terminal');
   const themeName = useStore((s) => s.terminalTheme);
   const setTerminalTheme = useStore((s) => s.setTerminalTheme);
 
@@ -525,6 +628,7 @@ export function SettingsTab() {
     { key: 'monitor', label: '监控', icon: '📈' },
     { key: 'mcp', label: 'MCP', icon: '🤖' },
     { key: 'quick', label: '快捷命令', icon: '⚡' },
+    { key: 'password', label: '密码', icon: '🔒' },
   ];
 
   return (
@@ -577,6 +681,12 @@ export function SettingsTab() {
           <div className="flex flex-col gap-2">
             <div className="mb-1 text-[13px] font-semibold text-[#cccccc]">快捷命令</div>
             <QuickCommands />
+          </div>
+        )}
+        {section === 'password' && (
+          <div className="flex flex-col gap-2">
+            <div className="mb-1 text-[13px] font-semibold text-[#cccccc]">登录密码</div>
+            <PasswordSettings />
           </div>
         )}
       </div>

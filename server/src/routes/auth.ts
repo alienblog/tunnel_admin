@@ -1,5 +1,7 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
-import { signSession, verifyPassword, verifySession, type Config } from '../config.js';
+import fs from 'node:fs';
+import path from 'node:path';
+import { hashPassword, signSession, verifyPassword, verifySession, type Config } from '../config.js';
 
 export const SESSION_COOKIE = 'ta_session';
 
@@ -47,5 +49,26 @@ export function registerAuth(app: FastifyInstance, config: Config): void {
     return { ok: true };
   });
 
-  app.get('/api/me', async (req) => ({ authenticated: isAuthed(req, config) }));
+  app.get('/api/me', async (req) => ({ authenticated: isAuthed(req, config), authRequired: config.authRequired }));
+
+  // 修改 Web 登录密码（免登录模式也可设置，重启后去掉 TUNNELADMIN_AUTH=none 即生效）
+  app.post('/api/password', async (req, reply) => {
+    if (!requireAuth(req, reply, config)) return;
+    const body = req.body as { oldPassword?: string; newPassword?: string } | null;
+    const newPassword = body?.newPassword ?? '';
+    if (newPassword.length < 6) {
+      return reply.code(400).send({ error: '新密码至少 6 位' });
+    }
+    // 密码模式下必须验证旧密码；免登录模式跳过（本地单用户）
+    if (config.authRequired && !verifyPassword(body?.oldPassword ?? '', config.passwordHash)) {
+      return reply.code(401).send({ error: '旧密码错误' });
+    }
+    config.passwordHash = hashPassword(newPassword);
+    try {
+      fs.writeFileSync(path.join(config.dataDir, 'password.hash'), config.passwordHash, { mode: 0o600 });
+    } catch (err) {
+      return reply.code(500).send({ error: `密码已更新但写入失败：${(err as Error).message}` });
+    }
+    return { ok: true };
+  });
 }
