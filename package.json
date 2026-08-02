@@ -47,7 +47,6 @@
       "desktop/server-launch.js",
       "server/dist/**",
       "server/package.json",
-      "server/node_modules/**",
       "web/dist/**",
       "!**/*.map"
     ],
