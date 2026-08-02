@@ -1,0 +1,17 @@
+#!/bin/sh
+# TunnelAdmin pre-commit hook：提交前自动更新 README 会话 token 用量
+# 跳过方式：SKIP_USAGE_UPDATE=1 git commit ...
+NODE_BIN="$(command -v node 2>/dev/null || echo "$HOME/.local/node/bin/node")"
+if [ -n "$SKIP_USAGE_UPDATE" ]; then
+  echo "[pre-commit] 跳过用量更新"
+  exit 0
+fi
+if [ -x "$NODE_BIN" ] && [ -f scripts/update-usage.cjs ]; then
+  if "$NODE_BIN" scripts/update-usage.cjs; then
+    git add README.md readme_en.md
+  else
+    echo "[pre-commit] 用量更新失败，提交已中止（可用 SKIP_USAGE_UPDATE=1 跳过）" >&2
+    exit 1
+  fi
+fi
+exit 0
