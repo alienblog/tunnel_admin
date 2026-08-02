@@ -519,7 +519,7 @@ export default function TerminalView({ tab }: { tab: TerminalTab }) {
       {/* 连接状态徽标（不写入终端文本；connected 2s 淡出，error/closed 常驻） */}
       {connBadge && (
         <div
-          className={`pointer-events-none absolute top-1 left-8 z-30 max-w-72 truncate rounded-sm border px-1.5 py-0.5 text-[10px] ${
+          className={`pointer-events-none absolute top-1 right-1 z-30 max-w-72 truncate rounded-sm border px-1.5 py-0.5 text-[10px] ${
             connBadge.kind === 'connecting'
               ? 'animate-pulse border-[#cca700]/60 bg-[#3b3116]/95 text-[#cca700]'
               : connBadge.kind === 'connected'
