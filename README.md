@@ -1,9 +1,11 @@
 # TunnelAdmin
 
+[English](readme_en.md) | 简体中文
+
 基于 Web 的 SSH 连接管理器 + MCP Server。浏览器里管理主机、开终端、传文件、建隧道；AI Agent 通过 MCP 协议（Streamable HTTP）直接操作你的服务器——**agent 首次连接每台主机都需要你在网页上确认**（human-in-the-loop 审批），批准后可选择「始终信任」免审批直连。
 
 > **纯 Vibe Coding 项目**：本项目全部代码由 AI 驱动开发（Oh My Pi + DeepSeek V4 Flash 模型），
-> 人工仅提供需求描述与验收反馈。截至当前，累计开发花费 **$2**。
+> 人工仅提供需求描述与验收反馈。截至当前，累计开发花费 **$2**（明细见文末[开发统计](#开发统计-vibe-coding-用量)）。
 
 ## 功能
 
@@ -126,3 +128,14 @@ scripts/            Windows 打包脚本（build-win.ps1 / bat）
 - **共享会话**：同一 SSH 连接可开多 channel——MCP 的 exec 与用户在 Web 附加的交互 shell 并行（ssh2 多 channel），agent 活动经 `exec:activity` 事件实时镜像；终端协议按 `streamId` 区分多视图
 - **终端保活**：外层/内层 tab 切换不卸载终端（CSS 隐藏保持挂载）；SSH 断连自动重连（5s→30s 退避）且 tmux 现场不丢
 - **远程转发为主**：部署在服务器上时「本地转发」的端口开在服务器上浏览器够不着，故主推远程转发；本地转发仅服务端进程可用
+
+## 开发统计（Vibe Coding 用量）
+
+<!-- usage -->
+| 会话 | 时间 | 输入 | 输出 | 缓存读 | 成本 |
+|---|---|---|---|---|---|
+| 1 | 07-31 ~ 08-02 | 548,973 | 1,114,376 | 604,287,616 | $2.08 |
+| **累计** | **1 个会话** | **548,973** | **1,114,376** | **604,287,616** | **$2.08** |
+<!-- /usage -->
+
+> 本表由 `node scripts/update-usage.cjs` 自动生成（提交前运行）：统计 `~/.omp/agent/sessions/-sources-tunneladmin/*.jsonl`，每个会话文件 = 一次会话；新会话自动累加进「累计」。

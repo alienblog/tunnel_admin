@@ -1,0 +1,140 @@
+# TunnelAdmin
+
+English | [简体中文](README.md)
+
+Web-based SSH connection manager + MCP Server. Manage hosts, open terminals, transfer files, and create tunnels in your browser; AI agents operate your servers directly through the MCP protocol (Streamable HTTP) — **every first connection by an agent to a host requires your confirmation in the web UI** (human-in-the-loop approval), with an optional "always trust" shortcut after approval.
+
+> **Pure Vibe Coding project**: all code in this project was developed by AI (Oh My Pi + DeepSeek V4 Flash model); humans only provided requirements and acceptance feedback. Cumulative development cost so far: **$2** (details in the [Development stats](#development-stats-vibe-coding-usage) section).
+
+## Features
+
+| Module | Capabilities |
+|---|---|
+| Web Terminal | Multi-tab/split-pane (VSCode editor group model), drag-and-drop docking, **auto-reconnect** on disconnect (exponential backoff, no state loss), tmux session persistence (survives refresh/disconnect), Ctrl+F search, command completion, multi-line paste confirmation, theme presets, session recording & replay, connection status badge |
+| Host Management | Groups/tags/notes, credentials encrypted at rest with AES-256-GCM, per-host trust switch |
+| SFTP File Manager | Directory browsing, drag-and-drop upload (recursive/with progress), download (streamed + progress), **double-click text editing** (Ctrl+S to save), copy/cut/paste, tar archive download (streamed), chmod, text preview, transfer manager (running/completed) |
+| Port Forwarding | Remote forwarding first: expose target intranet ports on the deployment server's port |
+| MCP Server | 16 tools: `ssh_list_hosts` / `ssh_connect` / `ssh_exec` (background jobs) / `ssh_read_file` / `ssh_write_file` / `ssh_list_dir` / `ssh_stat` / `ssh_session_info` / `ssh_disconnect` / `ssh_job_status` / `ssh_tail` (streaming) / `ssh_tail_poll` / `ssh_tail_stop` / `ssh_port_forward` / `ssh_list_forwards` / `ssh_stop_forward`; sessions keep cwd, command timeouts and output truncation |
+| Dangerous Command Rules | Configurable regex rules (block/approve), e.g. `rm -rf /`, `mkfs` blocked by default |
+| Shared Sessions | MCP-created connections appear in the Web terminal in real time (🤖 label); click to open your own terminal on the same connection; every agent command and its output is mirrored live to that view |
+| Connection Approval | Agent connection/dangerous-command requests push a real-time web dialog; approve/reject/remember trust, 60s timeout auto-rejects |
+| Monitoring | Real-time status bar metrics (CPU/memory/disk/network), 3-minute trend sparkline, alert threshold configuration |
+| Audit Log | Full MCP command records (command/exit code/duration); web terminals log at session level |
+| Desktop Client | Electron packaging (Windows NSIS installer/portable), embedded server, no login, isolated data directory |
+
+## Tech Stack
+
+- Backend: Node.js 22+ / TypeScript / Fastify 5 / ssh2 / better-sqlite3 / @modelcontextprotocol/sdk
+- Frontend: React 19 / Vite / xterm.js (@xterm/xterm 6) / Tailwind 4 / zustand
+- Desktop: Electron 33 / electron-builder (Windows / Linux)
+- Security: password login (httpOnly cookie, optional no-auth mode), MCP Bearer token, AES-256-GCM credential encryption, master key file 0600
+
+## Quick Start
+
+```bash
+npm install
+
+# Development (server :8080 + web :5173 with HMR)
+npm run dev
+
+# Production build and start (server serves web/dist)
+npm run build
+npm start
+```
+
+First launch generates in `data/`:
+- `master.key` — AES master key (0600)
+- `password.hash` — Web login password hash; **initial password is printed in the startup log** (changeable in Settings)
+
+### Environment Variables
+
+| Variable | Default | Description |
+|---|---|---|
+| `PORT` | 8080 | Listen port |
+| `HOST` | 0.0.0.0 | Listen address |
+| `TUNNELADMIN_PASSWORD` | auto-generated | Web login password |
+| `TUNNELADMIN_AUTH` | password | `none` = no login (used by the desktop client) |
+| `TUNNELADMIN_MASTER_KEY` | auto-generated | 64-hex master key (overrides key file) |
+| `TUNNELADMIN_DATA_DIR` | ./data | Data directory |
+| `TUNNELADMIN_APPROVAL_TIMEOUT` | 60000 | Approval timeout (ms) |
+| `TUNNELADMIN_MCP_TIMEOUT` | 30000 | Default MCP command timeout (ms) |
+| `TUNNELADMIN_MCP_OUTPUT_LIMIT` | 65536 | MCP command output truncation (bytes) |
+
+## Desktop Client (Windows)
+
+```powershell
+# One-click build on Windows (admin recommended; auto-downloads portable Node/proxy detection)
+scripts\build-win.ps1
+# or double-click scripts\build-win.bat
+```
+
+Artifacts: `release\TunnelAdmin-<version>-x64.exe` (installer) + `.zip` (portable).
+Desktop mode auto-skips login (`TUNNELADMIN_AUTH=none`), data stored in `%APPDATA%\tunneladmin`.
+
+## Connecting AI Agents via MCP
+
+1. Web UI → Settings → MCP → create a Token (or "📋 Copy prompt" for a ready-made setup guide)
+2. Agent config example (Claude Code / Cursor `.mcp.json`):
+
+```json
+{
+  "mcpServers": {
+    "tunneladmin": {
+      "type": "http",
+      "url": "https://your-server:8080/mcp",
+      "headers": { "Authorization": "Bearer ta_xxxxx" }
+    }
+  }
+}
+```
+
+3. When the agent calls `ssh_connect`, a confirmation dialog pops up in your browser; after approval it returns a `sessionId`, and subsequent `ssh_exec` / file operations reuse that session and keep its working directory.
+
+## Security Notes
+
+- When exposed publicly, always put it behind an HTTPS reverse proxy (e.g. Caddy: `caddy reverse-proxy --from your.domain --to :8080`)
+- The MCP endpoint enforces Bearer token auth
+- All credentials are encrypted at rest; back up the master key file (0600)
+- Single-user design; multi-user/RBAC is out of scope
+
+## Directory Layout
+
+```
+server/src/
+  index.ts          entry: Fastify + WS + MCP + static hosting
+  config.ts         config loading / password & cookie signing
+  crypto.ts         AES-256-GCM
+  db.ts             SQLite schema
+  approval.ts       agent connection approval service
+  events.ts         WebSocket event bus
+  ws.ts             terminal bridge (xterm ↔ ssh2 streams, disconnect detection + tmux persistence)
+  ssh/manager.ts    connection pool (jump host chains, keepalive)
+  routes/           auth / hosts / tokens / misc / sftp / forward
+  mcp/              MCP server (Streamable HTTP stateless mode) + toolset
+web/src/
+  pages/            Terminals (outer tabs: host/editor/settings/transfer/audit) / tabs / Login
+  components/       TerminalView (xterm) / SideBar / ReplayOverlay / ApprovalModal
+  store.ts          zustand (layout tree / workspace persistence / transfer records)
+desktop/            Electron main process + server launcher
+scripts/            Windows build scripts (build-win.ps1 / bat)
+```
+
+## Design Notes
+
+- **Web and MCP share one connection core**: connection config, credential decryption, and jump-host logic exist in exactly one place
+- **MCP stateless mode**: a fresh Server + transport per request (the SDK Protocol instance supports only a single transport); session state lives in a process-level shared Map
+- **Approval chain**: MCP request hangs → WS pushes dialog → user approves → connection established; timeout auto-rejects
+- **Shared sessions**: one SSH connection can open multiple channels — MCP exec and the user's interactive shell attached in Web run in parallel (ssh2 multi-channel); agent activity mirrors live via `exec:activity` events; terminal protocol distinguishes views by `streamId`
+- **Terminal keep-alive**: switching outer/inner tabs never unmounts terminals (CSS hidden keeps them mounted); SSH disconnects auto-reconnect (5s→30s backoff) with the tmux session intact
+- **Remote forwarding first**: when deployed on a server, "local forwarding" ports open on the server where browsers cannot reach them, so remote forwarding is the primary mode; local forwarding is only usable by server-side processes
+
+## Development Stats (Vibe Coding Usage)
+
+<!-- usage -->
+| Session | Period | Input | Output | Cache read | Cost |
+|---|---|---|---|---|---|
+| 1 | 07-31 ~ 08-02 | 548,973 | 1,114,376 | 604,287,616 | $2.08 |
+| **Total** | **1 sessions** | **548,973** | **1,114,376** | **604,287,616** | **$2.08** |
+<!-- /usage -->
+
+> This table is auto-generated by `node scripts/update-usage.cjs` (run it before every commit): it scans `~/.omp/agent/sessions/-sources-tunneladmin/*.jsonl`, one session file per session; new sessions accumulate into the "Total" row automatically.
