@@ -46,6 +46,8 @@ async function launchServer({ serverEntry, dataDir, nodeExec, port = 8080 }) {
       ELECTRON_RUN_AS_NODE: '1',
       TUNNELADMIN_PORT: String(actualPort),
       TUNNELADMIN_DATA_DIR: dataDir,
+      // 桌面客户端免 Web 登录（本地单用户）；MCP 仍走 token 鉴权
+      TUNNELADMIN_AUTH: 'none',
     },
     stdio: ['ignore', 'pipe', 'pipe'],
   });

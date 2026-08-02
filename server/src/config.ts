@@ -14,6 +14,8 @@ export interface Config {
   masterKey: Buffer;
   /** Web 登录密码哈希（salt:hash） */
   passwordHash: string;
+  /** 是否要求 Web 登录（TUNNELADMIN_AUTH=none 免登录） */
+  authRequired: boolean;
   /** cookie 签名密钥 */
   sessionSecret: string;
   /** agent 连接审批超时（毫秒） */
@@ -84,6 +86,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     dataDir,
     masterKey,
     passwordHash,
+    authRequired: (env.TUNNELADMIN_AUTH ?? 'password') !== 'none',
     sessionSecret: env.TUNNELADMIN_SESSION_SECRET ?? masterKey.toString('hex'),
     approvalTimeoutMs: parseInt(env.TUNNELADMIN_APPROVAL_TIMEOUT ?? '60000', 10),
     mcpDefaultTimeoutMs: parseInt(env.TUNNELADMIN_MCP_TIMEOUT ?? '30000', 10),
