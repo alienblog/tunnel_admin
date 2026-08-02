@@ -60,14 +60,14 @@ const zhTable = [
   '| 会话 | 输入 | 输出 | 缓存读 | 成本 |',
   '|---|---|---|---|---|',
   ...rows,
-  `| **累计** | **${sessions.length} 个会话** | **${fmt(tot.input)}** | **${fmt(tot.output)}** | **${fmt(tot.cache)}** | **$${tot.cost.toFixed(2)}** |`,
+  `| **累计（${sessions.length} 个会话）** | **${fmt(tot.input)}** | **${fmt(tot.output)}** | **${fmt(tot.cache)}** | **$${tot.cost.toFixed(2)}** |`,
 ].join('\n');
 
 const enTable = [
   '| Session | Input | Output | Cache read | Cost |',
   '|---|---|---|---|---|',
   ...rows,
-  `| **Total** | **${sessions.length} sessions** | **${fmt(tot.input)}** | **${fmt(tot.output)}** | **${fmt(tot.cache)}** | **$${tot.cost.toFixed(2)}** |`,
+  `| **Total (${sessions.length} ${sessions.length > 1 ? 'sessions' : 'session'})** | **${fmt(tot.input)}** | **${fmt(tot.output)}** | **${fmt(tot.cache)}** | **$${tot.cost.toFixed(2)}** |`,
 ].join('\n');
 
 // ---- 更新文件 ----
