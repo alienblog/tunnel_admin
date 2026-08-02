@@ -1,0 +1,126 @@
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      version:
+        description: '发布版本号（如 0.2.0）——自动打 tag 并触发完整发布流程'
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  # workflow_dispatch 只负责打 tag，由 push tag 事件触发下面的完整构建
+  tag:
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: 自动打 tag 并推送
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag "v${{ inputs.version }}"
+          git push origin "v${{ inputs.version }}"
+
+  linux-server:
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: 构建 Linux server 包
+        run: bash scripts/build-release.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux-server
+          path: release/tunneladmin-server-linux-x64.tar.gz
+
+  windows:
+    if: github.event_name == 'push'
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - name: 构建 Windows 桌面客户端
+        run: powershell -ExecutionPolicy Bypass -File scripts\build-win.ps1
+      - name: 构建 Windows server 包
+        run: powershell -ExecutionPolicy Bypass -File scripts\build-server-win.ps1
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows
+          path: |
+            release/TunnelAdmin-*-x64.exe
+            release/TunnelAdmin-*-x64.zip
+            release/tunneladmin-server-windows-x64.zip
+
+  release:
+    if: github.event_name == 'push'
+    needs: [linux-server, windows]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: assets
+          merge-multiple: true
+      - name: 整理资产
+        run: |
+          mkdir -p dist-assets
+          find assets -type f \( -name "*.tar.gz" -o -name "*.zip" -o -name "*.exe" \) -exec mv {} dist-assets/ \;
+          ls -la dist-assets/
+      - name: 创建 GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist-assets/*
+          generate_release_notes: true
+          name: TunnelAdmin ${{ github.ref_name }}
+          body: |
+            ## TunnelAdmin ${{ github.ref_name }}
+
+            基于 Web 的 SSH 连接管理器 + MCP Server，纯 Vibe Coding 项目（Oh My Pi + DeepSeek V4 Flash 模型驱动开发，累计花费 \$2，明细见 README「开发统计」）。
+
+            ### 下载
+
+            | 平台 | 文件 | 说明 |
+            |---|---|---|
+            | Linux | `tunneladmin-server-linux-x64.tar.gz` | Server 部署包（Node 22+，`./start.sh`） |
+            | Windows | `tunneladmin-server-windows-x64.zip` | Server（`start.bat`） |
+            | Windows | `TunnelAdmin-*-x64.exe` | 桌面客户端（NSIS 安装器，免登录） |
+            | Windows | `TunnelAdmin-*-x64.zip` | 桌面客户端（便携版） |
+
+            ### 快速开始
+
+            **Server**：解压后运行 `./start.sh`（Windows `start.bat`），浏览器打开 `http://服务器:8080`，初始密码打印在启动日志中（设置页可修改，`TUNNELADMIN_AUTH=none` 可免登录）。
+
+            **桌面版**：安装后直接运行（自动启动内置 server，数据在 `%APPDATA%\tunneladmin`）。
+
+            ### MCP 接入 Agent
+
+            设置页 → MCP → 新建 Token；Agent 配置：
+
+            ```json
+            {
+              "mcpServers": {
+                "tunneladmin": {
+                  "type": "http",
+                  "url": "http://服务器:8080/mcp",
+                  "headers": { "Authorization": "Bearer ta_xxxxx" }
+                }
+              }
+            }
+            ```
+
+            > 变更日志由 GitHub 根据提交自动生成。
