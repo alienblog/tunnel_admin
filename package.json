@@ -7,14 +7,72 @@
     "server",
     "web"
   ],
+  "main": "desktop/main.js",
   "scripts": {
     "dev": "concurrently -n server,web -c blue,green \"npm run dev -w server\" \"npm run dev -w web\"",
     "build": "npm run build -w server && npm run build -w web",
-    "start": "node server/dist/index.js"
+    "start": "node server/dist/index.js",
+    "desktop:start": "electron desktop/main.js",
+    "dist:desktop": "npm run build && electron-builder --dir",
+    "dist:win": "npm run build && electron-builder --win nsis zip",
+    "dist:linux": "npm run build && electron-builder --linux AppImage"
   },
   "devDependencies": {
     "concurrently": "^9.1.0",
+    "electron": "^33.0.0",
+    "electron-builder": "^25.1.8",
+    "electron-rebuild": "^3.2.9",
     "typescript-language-server": "^5.3.0"
+  },
+  "dependencies": {
+    "@fastify/cookie": "^11.0.0",
+    "@fastify/static": "^10.1.2",
+    "@fastify/websocket": "^11.0.0",
+    "@modelcontextprotocol/sdk": "^1.18.0",
+    "better-sqlite3": "^12.2.0",
+    "fastify": "^5.2.0",
+    "ssh2": "^1.16.0",
+    "zod": "^4.4.3"
+  },
+  "build": {
+    "appId": "com.tunneladmin.desktop",
+    "productName": "TunnelAdmin",
+    "asar": true,
+    "asarUnpack": [
+      "server/**",
+      "node_modules/**"
+    ],
+    "files": [
+      "desktop/main.js",
+      "desktop/server-launch.js",
+      "server/dist/**",
+      "server/package.json",
+      "server/node_modules/**",
+      "web/dist/**",
+      "!**/*.map"
+    ],
+    "directories": {
+      "output": "release"
+    },
+    "win": {
+      "target": [
+        "nsis",
+        "zip"
+      ],
+      "artifactName": "TunnelAdmin-${version}-${arch}.${ext}"
+    },
+    "linux": {
+      "target": [
+        "AppImage"
+      ],
+      "category": "Network",
+      "artifactName": "TunnelAdmin-${version}-${arch}.${ext}"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "shortcutName": "TunnelAdmin"
+    }
   },
   "engines": {
     "node": ">=22"
