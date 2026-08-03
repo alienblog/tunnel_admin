@@ -28,3 +28,12 @@ body {
 ::-webkit-scrollbar-corner {
   background: transparent;
 }
+
+/* CodeMirror 编辑器：撑满容器，内部滚动（滚轮/滚动条） */
+.cm-editor {
+  height: 100%;
+}
+.cm-editor .cm-scroller {
+  overflow: auto;
+  font-family: "SF Mono", Menlo, Consolas, "Courier New", monospace;
+}
