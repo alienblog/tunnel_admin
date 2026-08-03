@@ -2,15 +2,13 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   useStore,
   collectGroups,
-  collectLeaves,
   computeLeafRects,
   type DropPos,
   type LayoutNode,
-  type OuterTab,
   type Rect,
 } from '../store';
 import TerminalView from '../components/TerminalView';
-import { AuditTab, EditorTab, SettingsTab, TransferTab } from './tabs';
+import OuterWorkspace, { OuterTabContent, OuterTabIcon, outerLabel } from './OuterLayout';
 
 /**
  * 双层工作区（VSCode 编辑器组模型）：
@@ -224,7 +222,7 @@ function LayoutNodeView({ node, hostId }: { node: LayoutNode; hostId: string }) 
  * 终端池独立于布局树：拖拽分屏 / 合并 / 根节点类型变化时 TerminalView 永不卸载，
  * 连接与 xterm 历史完整保留；布局变化只更新每个 tab 的视口矩形。
  */
-function HostWorkspace({ hostId }: { hostId: string }) {
+export function HostWorkspace({ hostId }: { hostId: string }) {
   const containerRef = useRef<HTMLDivElement>(null);
   const layout = useStore((s) => s.hostLayouts[hostId]);
   const tabs = useStore((s) => s.tabs);
@@ -267,145 +265,80 @@ function HostWorkspace({ hostId }: { hostId: string }) {
   );
 }
 
-/** 外层 tab 标签图标 */
-function OuterTabIcon({ tab }: { tab: OuterTab }) {
-  if (tab.kind === 'host') {
-    return (
-      <svg viewBox="0 0 16 16" className="h-3.5 w-3.5 text-[#858585]" fill="currentColor">
-        <path d="M1.5 3A1.5 1.5 0 013 1.5h3.086c.398 0 .78.158 1.061.44l.914.914H13A1.5 1.5 0 0114.5 4.354v8.146A1.5 1.5 0 0113 14H3a1.5 1.5 0 01-1.5-1.5V3z" />
-      </svg>
-    );
-  }
-  if (tab.kind === 'editor') {
-    return (
-      <svg viewBox="0 0 16 16" className="h-3.5 w-3.5 text-[#4fc1ff]" fill="currentColor">
-        <path d="M2 1.5h4.5l2 2H14a1 1 0 011 1V13a1 1 0 01-1 1H2a1 1 0 01-1-1V2.5a1 1 0 011-1z" />
-      </svg>
-    );
-  }
-  if (tab.kind === 'transfer') {
-    return (
-      <svg viewBox="0 0 16 16" className="h-3.5 w-3.5 text-[#4ec9b0]" fill="currentColor">
-        <path d="M8 1.5a.75.75 0 01.75.75v9.19l2.47-2.47a.75.75 0 111.06 1.06l-3.75 3.75a.75.75 0 01-1.06 0l-3.75-3.75a.75.75 0 111.06-1.06l2.47 2.47V2.25A.75.75 0 018 1.5z" />
-      </svg>
-    );
-  }
-  if (tab.kind === 'audit') {
-    return (
-      <svg viewBox="0 0 16 16" className="h-3.5 w-3.5 text-[#cca700]" fill="currentColor">
-        <path d="M2 3.75A.75.75 0 012.75 3h10.5a.75.75 0 010 1.5H2.75A.75.75 0 012 3.75zm0 4A.75.75 0 012.75 7h10.5a.75.75 0 010 1.5H2.75A.75.75 0 012 7.75zm0 4A.75.75 0 012.75 11h6.5a.75.75 0 010 1.5h-6.5A.75.75 0 012 11.75z" />
-      </svg>
-    );
-  }
-  return (
-    <svg viewBox="0 0 16 16" className="h-3.5 w-3.5 text-[#858585]" fill="currentColor">
-      <path d="M6.5 1.5a.75.75 0 01.75-.75h1.5a.75.75 0 01.75.75V2.9a4.25 4.25 0 011.8 1.04l1.46-.6a.75.75 0 01.97.34l.75 1.3a.75.75 0 01-.25 1L13.5 7a4.3 4.3 0 010 2l1.23.96a.75.75 0 01.25 1l-.75 1.3a.75.75 0 01-.97.34l-1.46-.6a4.25 4.25 0 01-1.8 1.04v1.76a.75.75 0 01-.75.75h-1.5a.75.75 0 01-.75-.75v-1.76a4.25 4.25 0 01-1.8-1.04l-1.46.6a.75.75 0 01-.97-.34l-.75-1.3a.75.75 0 01.25-1L2.5 9a4.3 4.3 0 010-2L1.27 6.04a.75.75 0 01-.25-1l.75-1.3a.75.75 0 01.97-.34l1.46.6a4.25 4.25 0 011.8-1.04V1.5zM8 5.25A2.75 2.75 0 108 10.75 2.75 2.75 0 008 5.25z" />
-    </svg>
-  );
-}
-
 export default function Terminals() {
   const outerTabs = useStore((s) => s.outerTabs);
-  const activeOuterId = useStore((s) => s.activeOuterId);
-  const hostLayouts = useStore((s) => s.hostLayouts);
-  const setActiveTab = useStore((s) => s.setActiveTab);
-  const setActiveOuter = useStore((s) => s.setActiveOuter);
+  const rightDockId = useStore((s) => s.rightDockId);
+  const rightDockCollapsed = useStore((s) => s.rightDockCollapsed);
+  const toggleRightDock = useStore((s) => s.toggleRightDock);
+  const setRightDock = useStore((s) => s.setRightDock);
   const closeOuterTab = useStore((s) => s.closeOuterTab);
-  const tabs = useStore((s) => s.tabs);
-
-  const activeTab = outerTabs.find((t) => t.id === activeOuterId) ?? null;
+  const openOuterTab = useStore((s) => s.openOuterTab);
+  const setOuterDragId = useStore((s) => s.setOuterDragId);
+  const hosts = useStore((s) => s.hosts);
+  const rightTab = outerTabs.find((t) => t.id === rightDockId) ?? null;
+  const rightLabel = rightTab
+    ? rightTab.kind === 'host'
+      ? (hosts.find((h) => String(h.id) === rightTab.hostId)?.name ?? rightTab.hostId)
+      : outerLabel(rightTab)
+    : '';
 
   return (
-    <div className="flex h-full flex-col">
-      {/* 外层 tab 栏 */}
-      <div className="flex h-9 shrink-0 items-stretch overflow-x-auto border-b border-[#1e1e1e] bg-[#2d2d2d]">
-        {outerTabs.map((tab) => {
-          const active = tab.id === activeOuterId;
-          if (tab.kind === 'host') {
-            const leaves = collectLeaves(hostLayouts[tab.hostId]);
-            const host = tabs.find((t) => t.id === leaves[0]);
-            return (
-              <div
-                key={tab.id}
-                onClick={() => {
-                  setActiveOuter(tab.id);
-                  const first = leaves[0];
-                  if (first) setActiveTab(first);
-                }}
-                className={`group flex cursor-pointer items-center gap-1.5 border-r border-[#1e1e1e] px-3 text-[13px] whitespace-nowrap select-none ${
-                  active ? 'border-t-2 border-t-[#007acc] bg-[#1e1e1e] text-white' : 'text-[#969696] hover:bg-[#333333]'
-                }`}
-              >
-                <OuterTabIcon tab={tab} />
-                <span className="max-w-32 truncate">{host?.hostName ?? tab.hostId}</span>
-                <span className="rounded-sm bg-[#3a3d41] px-1 text-[10px] text-[#cccccc]">{leaves.length}</span>
+    <div className="flex h-full min-h-0">
+      {/* 主区：第一层布局（tab 栏按组渲染，可拖拽分屏/合并/停靠右栏） */}
+      <div className="flex min-w-0 flex-1 flex-col">
+        <OuterWorkspace />
+      </div>
+      {/* 固定右栏（拖外层 tab 到主区右缘停靠；可展开/折叠/移回主区/关闭） */}
+      {rightTab && (
+        <div className={`flex shrink-0 flex-col border-l border-[#1e1e1e] bg-[#252526] ${rightDockCollapsed ? 'w-9' : 'w-80'}`}>
+          <div
+            draggable
+            onDragStart={(e) => {
+              setOuterDragId(rightTab.id);
+              e.dataTransfer.effectAllowed = 'move';
+            }}
+            onDragEnd={() => setOuterDragId(null)}
+            title="拖动到主区可移回布局"
+            className="flex h-8 shrink-0 cursor-grab items-center gap-1 border-b border-[#1e1e1e] px-1 active:cursor-grabbing"
+          >
+            <button
+              title={rightDockCollapsed ? '展开右栏' : '折叠右栏'}
+              onClick={toggleRightDock}
+              className="rounded-sm px-1 text-[#969696] hover:bg-[#3a3d41] hover:text-white"
+            >
+              {rightDockCollapsed ? '«' : '»'}
+            </button>
+            {!rightDockCollapsed && (
+              <>
+                <OuterTabIcon tab={rightTab} />
+                <span className="min-w-0 flex-1 truncate text-[12px] text-[#cccccc]">{rightLabel}</span>
                 <button
-                  title="关闭该主机全部终端"
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    closeOuterTab(tab.id);
+                  title="移回主区"
+                  onClick={() => {
+                    openOuterTab(rightTab);
+                    setRightDock(null);
                   }}
-                  className="rounded-sm px-1 text-[#969696] hover:bg-[#3a3d41] hover:text-white"
+                  className="rounded-sm px-1 text-[#858585] hover:bg-[#3a3d41] hover:text-white"
+                >
+                  ⇱
+                </button>
+                <button
+                  title="关闭"
+                  onClick={() => closeOuterTab(rightTab.id)}
+                  className="rounded-sm px-1 text-[#858585] hover:bg-[#f14c4c]/20 hover:text-[#f14c4c]"
                 >
                   ×
                 </button>
-              </div>
-            );
-          }
-          // 工具 tab：设置 / 传输 / 审计 / 编辑器
-          const label =
-            tab.kind === 'settings' ? '设置' : tab.kind === 'transfer' ? '传输' : tab.kind === 'audit' ? '审计' : tab.name;
-          return (
-            <div
-              key={tab.id}
-              onClick={() => setActiveOuter(tab.id)}
-              className={`group flex cursor-pointer items-center gap-1.5 border-r border-[#1e1e1e] px-3 text-[13px] whitespace-nowrap select-none ${
-                active ? 'border-t-2 border-t-[#007acc] bg-[#1e1e1e] text-white' : 'text-[#969696] hover:bg-[#333333]'
-              }`}
-              title={tab.kind === 'editor' ? tab.path : label}
-            >
-              <OuterTabIcon tab={tab} />
-              <span className="max-w-40 truncate">{label}</span>
-              <button
-                title="关闭"
-                onClick={(e) => {
-                  e.stopPropagation();
-                  closeOuterTab(tab.id);
-                }}
-                className="rounded-sm px-1 text-[#969696] hover:bg-[#3a3d41] hover:text-white"
-              >
-                ×
-              </button>
-            </div>
-          );
-        })}
-        {outerTabs.length === 0 && (
-          <div className="flex items-center px-3 text-[12px] text-[#5a5a5a]">从左侧主机列表选择主机打开终端</div>
-        )}
-      </div>
-
-      {/* 内容区：所有主机工作区保持挂载（切换外层 tab 不卸载终端，避免重连），非活动 CSS 隐藏 */}
-      <div className="relative min-h-0 flex-1">
-        {outerTabs
-          .filter((t): t is Extract<OuterTab, { kind: 'host' }> => t.kind === 'host')
-          .map((tab) => (
-            <div key={tab.id} className={`absolute inset-0 ${activeOuterId === tab.id ? '' : 'hidden'}`}>
-              <HostWorkspace hostId={tab.hostId} />
-            </div>
-          ))}
-        {/* 工具 tab：编辑器 / 设置 / 传输 / 审计（无长连接，切换即卸载） */}
-        {activeTab?.kind === 'editor' && <EditorTab tab={activeTab} />}
-        {activeTab?.kind === 'settings' && <SettingsTab />}
-        {activeTab?.kind === 'transfer' && <TransferTab />}
-        {activeTab?.kind === 'audit' && <AuditTab />}
-        {/* 空态 */}
-        {!activeTab && (
-          <div className="flex h-full flex-col items-center justify-center gap-2 text-[#5a5a5a]">
-            <div className="text-4xl">⌨️</div>
-            <div>从左侧主机列表选择主机打开终端</div>
+              </>
+            )}
           </div>
-        )}
-      </div>
+          {!rightDockCollapsed && (
+            <div className="min-h-0 flex-1">
+              <OuterTabContent tab={rightTab} />
+            </div>
+          )}
+        </div>
+      )}
     </div>
   );
 }

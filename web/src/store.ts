@@ -268,6 +268,14 @@ interface AppState {
   outerTabs: OuterTab[];
   /** 外层活动 tab id */
   activeOuterId: string | null;
+  /** 外层布局树（第一层 tab 也可分屏/合并，VSCode 编辑器组模型） */
+  outerLayout: LayoutNode | null;
+  /** 右栏停靠的外层 tab id（null = 无右栏） */
+  rightDockId: string | null;
+  /** 右栏是否折叠 */
+  rightDockCollapsed: boolean;
+  /** 拖拽中的外层 tab id */
+  outerDragId: string | null;
   /** 全局焦点终端（派生维护，供 SFTP 跟随 / 后台通知判断） */
   activeTabId: string | null;
   /** 拖拽中的 tab */
@@ -325,6 +333,14 @@ interface AppState {
   /** 关闭外层 tab（host 关闭时同时关闭其全部终端） */
   closeOuterTab: (id: string) => void;
   setActiveOuter: (id: string | null) => void;
+  /** 外层 tab 拖拽停靠：分屏/合并（第一层布局） */
+  moveOuterTab: (tabId: string, targetGroupId: string, pos: DropPos) => void;
+  /** 调整外层分屏比例 */
+  setOuterSplitRatio: (splitId: string, ratio: number) => void;
+  setOuterDragId: (id: string | null) => void;
+  /** 停靠/取消停靠右栏（停靠时从外层布局移除） */
+  setRightDock: (id: string | null) => void;
+  toggleRightDock: () => void;
   /** 记录传输（自动分配 id，上限 100 条） */
   addTransfer: (t: Omit<TransferRec, 'id' | 'ts'>) => number;
   updateTransfer: (id: number, patch: Partial<Pick<TransferRec, 'transferred' | 'status' | 'error' | 'size' | 'localPath'>>) => void;
@@ -383,6 +399,10 @@ export const useStore = create<AppState>((set, get) => ({
   hostLayouts: {},
   outerTabs: [],
   activeOuterId: null,
+  outerLayout: null,
+  rightDockId: null,
+  rightDockCollapsed: false,
+  outerDragId: null,
   activeTabId: null,
   dragTabId: null,
   transfers: (() => {
@@ -451,20 +471,25 @@ export const useStore = create<AppState>((set, get) => ({
   setView: (v) => set({ view: v }),
 
   openHostOuter: (hostId) => {
-    const tabs = get().outerTabs;
-    const exists = tabs.some((t) => t.kind === 'host' && t.hostId === hostId);
-    set({
-      outerTabs: exists ? tabs : [...tabs, { kind: 'host', id: hostId, hostId }],
-      activeOuterId: hostId,
-    });
+    const exists = get().outerTabs.some((t) => t.kind === 'host' && t.hostId === hostId);
+    const outerTabs = exists ? get().outerTabs : [...get().outerTabs, { kind: 'host', id: hostId, hostId } as OuterTab];
+    let outerLayout = get().outerLayout;
+    if (!outerLayout) outerLayout = makeGroup(hostId);
+    else if (!collectLeaves(outerLayout).includes(hostId)) outerLayout = addTabToFirstGroup(outerLayout, hostId);
+    const gid = findGroupIdOfTab(outerLayout, hostId);
+    if (gid) outerLayout = setGroupActive(outerLayout, gid, hostId);
+    set({ outerTabs, outerLayout, activeOuterId: hostId });
   },
 
   openOuterTab: (tab) => {
     const exists = get().outerTabs.some((t) => t.id === tab.id);
-    set({
-      outerTabs: exists ? get().outerTabs : [...get().outerTabs, tab],
-      activeOuterId: tab.id,
-    });
+    const outerTabs = exists ? get().outerTabs : [...get().outerTabs, tab];
+    let outerLayout = get().outerLayout;
+    if (!outerLayout) outerLayout = makeGroup(tab.id);
+    else if (!collectLeaves(outerLayout).includes(tab.id)) outerLayout = addTabToFirstGroup(outerLayout, tab.id);
+    const gid = findGroupIdOfTab(outerLayout, tab.id);
+    if (gid) outerLayout = setGroupActive(outerLayout, gid, tab.id);
+    set({ outerTabs, outerLayout, activeOuterId: tab.id });
   },
 
   closeOuterTab: (id) => {
@@ -475,11 +500,57 @@ export const useStore = create<AppState>((set, get) => ({
       return;
     }
     const outerTabs = get().outerTabs.filter((t) => t.id !== id);
-    const activeOuterId = get().activeOuterId === id ? (outerTabs[outerTabs.length - 1]?.id ?? null) : get().activeOuterId;
-    set({ outerTabs, activeOuterId });
+    const outerLayout = removeTabFromLayout(get().outerLayout, id);
+    const leaves = outerLayout ? collectLeaves(outerLayout) : [];
+    const activeOuterId = get().activeOuterId === id ? (leaves[leaves.length - 1] ?? null) : get().activeOuterId;
+    set({ outerTabs, outerLayout, activeOuterId });
   },
 
-  setActiveOuter: (id) => set({ activeOuterId: id }),
+  setActiveOuter: (id) => {
+    const layout = get().outerLayout;
+    let outerLayout = layout;
+    if (layout && id) {
+      const gid = findGroupIdOfTab(layout, id);
+      if (gid) outerLayout = setGroupActive(layout, gid, id);
+    }
+    set({ activeOuterId: id, outerLayout });
+  },
+
+  moveOuterTab: (tabId, targetGroupId, pos) => {
+    if (tabId === targetGroupId) return;
+    const layout = get().outerLayout;
+    if (!layout || !get().outerTabs.some((t) => t.id === tabId)) return;
+    const src = removeTabFromLayout(layout, tabId);
+    if (!src) return;
+    const outerLayout =
+      pos === 'center' ? moveTabIntoGroup(src, tabId, targetGroupId) : splitGroupAt(src, targetGroupId, tabId, pos);
+    // 从右栏拖回主区时取消右栏停靠
+    const patch = get().rightDockId === tabId ? { rightDockId: null as string | null } : {};
+    set({ outerLayout, activeOuterId: tabId, ...patch });
+  },
+
+  setOuterSplitRatio: (splitId, ratio) => {
+    const layout = get().outerLayout;
+    if (!layout) return;
+    const update = (node: LayoutNode): LayoutNode => {
+      if (node.type === 'group') return node;
+      if (node.id === splitId) return { ...node, ratio };
+      return { ...node, children: node.children.map(update) };
+    };
+    set({ outerLayout: update(layout) });
+  },
+
+  setOuterDragId: (outerDragId) => set({ outerDragId }),
+
+  setRightDock: (id) => {
+    let outerLayout = get().outerLayout;
+    if (id && outerLayout && collectLeaves(outerLayout).includes(id)) {
+      outerLayout = removeTabFromLayout(outerLayout, id);
+    }
+    set({ rightDockId: id, rightDockCollapsed: false, outerLayout, outerDragId: null });
+  },
+
+  toggleRightDock: () => set({ rightDockCollapsed: !get().rightDockCollapsed }),
 
   addTransfer: (t) => {
     const rec: TransferRec = { ...t, id: Date.now() + Math.floor(Math.random() * 1000), ts: Date.now() };
@@ -606,12 +677,9 @@ export const useStore = create<AppState>((set, get) => ({
     set({
       tabs: [...get().tabs, tab],
       hostLayouts: { ...get().hostLayouts, [hostId]: newLayout },
-      outerTabs: get().outerTabs.some((t) => t.id === hostId)
-        ? get().outerTabs
-        : [...get().outerTabs, { kind: 'host', id: hostId, hostId }],
-      activeOuterId: hostId,
       activeTabId: tab.id,
     });
+    get().openHostOuter(hostId);
     return tab.id;
   },
 
@@ -625,12 +693,9 @@ export const useStore = create<AppState>((set, get) => ({
     set({
       tabs: [...get().tabs, tab],
       hostLayouts: { ...get().hostLayouts, [hostId]: addTabToGroup(layout, groupId, tab.id) },
-      outerTabs: get().outerTabs.some((t) => t.id === hostId)
-        ? get().outerTabs
-        : [...get().outerTabs, { kind: 'host', id: hostId, hostId }],
-      activeOuterId: hostId,
       activeTabId: tab.id,
     });
+    get().openHostOuter(hostId);
     return tab.id;
   },
 
@@ -640,15 +705,12 @@ export const useStore = create<AppState>((set, get) => ({
     const existing = get().hostLayouts[hostId];
     const newLayout = existing ? addTabToFirstGroup(existing, tab.id) : makeGroup(tab.id);
     const activate = opts?.activate ?? true;
-    const outerTabs = get().outerTabs;
-    const hostTab = outerTabs.some((t) => t.id === hostId);
     set({
       tabs: [...get().tabs, tab],
       hostLayouts: { ...get().hostLayouts, [hostId]: newLayout },
-      outerTabs: hostTab ? outerTabs : [...outerTabs, { kind: 'host', id: hostId, hostId }],
-      activeOuterId: activate ? hostId : get().activeOuterId,
       activeTabId: activate ? tab.id : get().activeTabId,
     });
+    if (activate) get().openHostOuter(hostId);
     return tab.id;
   },
 
@@ -691,15 +753,22 @@ export const useStore = create<AppState>((set, get) => ({
     const closing = new Set(collectLeaves(layout));
     const hostLayouts = { ...get().hostLayouts };
     delete hostLayouts[hostId];
+    // 外层布局同步移除该主机 tab
+    let outerLayout = get().outerLayout;
+    if (outerLayout && collectLeaves(outerLayout).includes(hostId)) {
+      outerLayout = removeTabFromLayout(outerLayout, hostId);
+    }
     const outerTabs = get().outerTabs.filter((t) => t.id !== hostId);
     const nextHost = Object.keys(hostLayouts)[0] ?? null;
     const nextLayout = nextHost ? hostLayouts[nextHost] : null;
     const wasActive = get().activeOuterId === hostId;
+    const outerLeaves = outerLayout ? collectLeaves(outerLayout) : [];
     set({
       tabs: get().tabs.filter((t) => !closing.has(t.id)),
       hostLayouts,
       outerTabs,
-      activeOuterId: wasActive ? nextHost : get().activeOuterId,
+      outerLayout,
+      activeOuterId: wasActive ? (outerLeaves[outerLeaves.length - 1] ?? null) : get().activeOuterId,
       activeTabId: wasActive
         ? nextLayout
           ? collectLeaves(nextLayout)[0] ?? null
@@ -719,13 +788,10 @@ export const useStore = create<AppState>((set, get) => ({
     const layout = groupId ? setGroupActive(get().hostLayouts[hostId], groupId, id) : get().hostLayouts[hostId];
     set({
       hostLayouts: { ...get().hostLayouts, [hostId]: layout },
-      outerTabs: get().outerTabs.some((t) => t.id === hostId)
-        ? get().outerTabs
-        : [...get().outerTabs, { kind: 'host', id: hostId, hostId }],
-      activeOuterId: hostId,
       activeTabId: id,
       tabs: get().tabs.map((t) => (t.id === id && t.notify ? { ...t, notify: undefined } : t)),
     });
+    get().openHostOuter(hostId);
   },
 
   moveTab: (tabId, targetGroupId, pos) => {
@@ -784,11 +850,24 @@ export const useStore = create<AppState>((set, get) => ({
         streamId: null,
         status: 'connecting' as const,
       }));
-    // 外层仅持久化 host tab（编辑器/设置等工具页不恢复）
+    const activeOuterId = get().activeOuterId;
     const outerHost =
-      get().outerTabs.find((t): t is Extract<OuterTab, { kind: 'host' }> => t.kind === 'host' && t.id === get().activeOuterId)?.hostId ?? null;
+      get().outerTabs.find((t): t is Extract<OuterTab, { kind: 'host' }> => t.kind === 'host' && t.id === activeOuterId)?.hostId ?? null;
+    // 外层：host tab 由 hostLayouts 恢复；工具页 tab（编辑器/设置等）数据持久化
+    const toolOuterTabs = get().outerTabs.filter((t): t is Exclude<OuterTab, { kind: 'host' }> => t.kind !== 'host');
     try {
-      localStorage.setItem('ta-workspace', JSON.stringify({ tabs: webTabs, hostLayouts, outerHost, ts: Date.now() }));
+      localStorage.setItem(
+        'ta-workspace',
+        JSON.stringify({
+          tabs: webTabs,
+          hostLayouts,
+          outerHost,
+          outerLayout: get().outerLayout,
+          toolOuterTabs,
+          rightDockId: get().rightDockId,
+          ts: Date.now(),
+        }),
+      );
     } catch {
       // 存储失败忽略
     }
@@ -802,6 +881,9 @@ export const useStore = create<AppState>((set, get) => ({
         tabs: TerminalTab[];
         hostLayouts: Record<string, LayoutNode>;
         outerHost: string | null;
+        outerLayout?: LayoutNode | null;
+        toolOuterTabs?: OuterTab[];
+        rightDockId?: string | null;
       };
       if (!saved?.tabs?.length || !saved.hostLayouts) return;
       // 布局中引用已不存在 tab 的 leaf 清理掉
@@ -814,13 +896,34 @@ export const useStore = create<AppState>((set, get) => ({
         }
         if (cleaned) hostLayouts[hostId] = cleaned;
       }
-      const outerTabs: OuterTab[] = Object.keys(hostLayouts).map((hostId) => ({ kind: 'host', id: hostId, hostId }));
+      const outerTabs: OuterTab[] = [
+        ...Object.keys(hostLayouts).map((hostId): OuterTab => ({ kind: 'host', id: hostId, hostId })),
+        ...(saved.toolOuterTabs ?? []),
+      ];
+      // 外层布局恢复（清理引用不存在的 leaf）；无布局时按 outerTabs 建单组
+      let outerLayout = saved.outerLayout ?? null;
+      if (outerLayout) {
+        const valid = new Set(outerTabs.map((t) => t.id));
+        for (const leaf of collectLeaves(outerLayout)) {
+          if (!valid.has(leaf)) outerLayout = removeTabFromLayout(outerLayout, leaf);
+        }
+      }
+      if (!outerLayout && outerTabs.length > 0) {
+        const [first, ...rest] = outerTabs;
+        outerLayout = makeGroup(first.id);
+        for (const t of rest) outerLayout = addTabToFirstGroup(outerLayout, t.id);
+      }
+      const outerLeaves = outerLayout ? collectLeaves(outerLayout) : [];
       const activeOuterId =
-        saved.outerHost && hostLayouts[saved.outerHost] ? saved.outerHost : (outerTabs[outerTabs.length - 1]?.id ?? null);
+        saved.outerHost && outerLeaves.includes(saved.outerHost)
+          ? saved.outerHost
+          : (outerLeaves[outerLeaves.length - 1] ?? null);
       set({
         tabs: saved.tabs,
         hostLayouts,
         outerTabs,
+        outerLayout,
+        rightDockId: saved.rightDockId && outerTabs.some((t) => t.id === saved.rightDockId) ? saved.rightDockId : null,
         activeOuterId,
         activeTabId: null,
       });
