@@ -49,7 +49,7 @@ for (const f of files) {
 if (!sessions.length) { console.error('无可用会话数据'); process.exit(1); }
 
 const fmt = n => n.toLocaleString('en-US');
-const line = (no, s) => `| ${no} | ${fmt(s.input)} | ${fmt(s.output)} | ${fmt(s.cache)} |`;
+const line = (no, s) => `| ${no} | ${fmt(s.input)} | ${fmt(s.output)} | ${fmt(s.cache)} | $${s.cost.toFixed(2)} |`;
 const rows = sessions.map((s, i) => line(i + 1, s));
 const tot = sessions.reduce((a, s) => ({
   input: a.input + s.input, output: a.output + s.output,
@@ -57,17 +57,17 @@ const tot = sessions.reduce((a, s) => ({
 }), { input: 0, output: 0, cache: 0, cost: 0 });
 
 const zhTable = [
-  '| 会话 | 输入 | 输出 | 缓存读 |',
-  '|---|---|---|---|',
+  '| 会话 | 输入 | 输出 | 缓存读 | 成本 |',
+  '|---|---|---|---|---|',
   ...rows,
-  `| **累计（${sessions.length} 个会话）** | **${fmt(tot.input)}** | **${fmt(tot.output)}** | **${fmt(tot.cache)}** |`,
+  `| **累计（${sessions.length} 个会话）** | **${fmt(tot.input)}** | **${fmt(tot.output)}** | **${fmt(tot.cache)}** | **$${tot.cost.toFixed(2)}** |`,
 ].join('\n');
 
 const enTable = [
-  '| Session | Input | Output | Cache read |',
-  '|---|---|---|---|',
+  '| Session | Input | Output | Cache read | Cost |',
+  '|---|---|---|---|---|',
   ...rows,
-  `| **Total (${sessions.length} ${sessions.length > 1 ? 'sessions' : 'session'})** | **${fmt(tot.input)}** | **${fmt(tot.output)}** | **${fmt(tot.cache)}** |`,
+  `| **Total (${sessions.length} ${sessions.length > 1 ? 'sessions' : 'session'})** | **${fmt(tot.input)}** | **${fmt(tot.output)}** | **${fmt(tot.cache)}** | **$${tot.cost.toFixed(2)}** |`,
 ].join('\n');
 
 // ---- 更新文件 ----
