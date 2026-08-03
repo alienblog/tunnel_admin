@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { api, type AuditEntry, type CmdRule, type Credential, type McpToken } from '../api';
 import { useStore, type OuterTab } from '../store';
+import FileEditor from '../components/FileEditor';
 import { THEME_NAMES } from '../themes';
 import { getDesktop } from '../desktop';
 
@@ -16,21 +17,27 @@ function fmtBytes(n: number): string {
 const inputCls =
   'rounded-sm border border-[#3c3c3c] bg-[#1e1e1e] px-2 py-1 text-[12px] text-[#cccccc] outline-none focus:border-[#007acc]';
 
-/** 文件编辑器：双击文件打开，Ctrl+S 保存，5MB 上限（超限只读防误覆盖） */
+/** 文件编辑器：双击文件打开，Ctrl+S 保存，5MB 上限（超限只读）；CodeMirror 语法高亮；未保存标识（顶栏 + tab ●） */
 export function EditorTab({ tab }: { tab: Extract<OuterTab, { kind: 'editor' }> }) {
-  const [content, setContent] = useState<string | null>(null);
   const [dirty, setDirty] = useState(false);
   const [saving, setSaving] = useState(false);
   const [binary, setBinary] = useState(false);
   const [tooBig, setTooBig] = useState(false);
   const [error, setError] = useState('');
   const [cursor, setCursor] = useState({ line: 1, col: 1 });
-  const taRef = useRef<HTMLTextAreaElement>(null);
+  const [loaded, setLoaded] = useState(false);
+  const [reloadSeq, setReloadSeq] = useState(0);
+  const [content, setContent] = useState<string>('');
+  const editorKey = `${reloadSeq}`;
   const closeOuterTab = useStore((s) => s.closeOuterTab);
+  const setEditorDirty = useStore((s) => s.setEditorDirty);
   const pushToast = useStore((s) => s.pushToast);
+  const dirtyRef = useRef(false);
+  dirtyRef.current = dirty;
 
   const load = useCallback(async (): Promise<void> => {
     setError('');
+    setLoaded(false);
     try {
       const r = await api<{ content: string; binary: boolean; truncated: boolean }>(
         `/api/sftp/read?hostId=${tab.hostId}&path=${encodeURIComponent(tab.path)}&maxBytes=${5 * 1024 * 1024}`,
@@ -39,23 +46,30 @@ export function EditorTab({ tab }: { tab: Extract<OuterTab, { kind: 'editor' }> 
       setTooBig(r.truncated);
       setContent(r.binary ? '' : r.content);
       setDirty(false);
+      setEditorDirty(tab.id, false);
+      setReloadSeq((n) => n + 1); // 强制重建编辑器（新内容）
+      setLoaded(true);
     } catch (err) {
       setError((err as Error).message);
-      setContent('');
+      setLoaded(true);
     }
-  }, [tab.hostId, tab.path]);
+  }, [tab.hostId, tab.path, tab.id, setEditorDirty]);
 
   useEffect(() => {
     void load();
   }, [load]);
 
   const save = useCallback(async (): Promise<void> => {
-    if (content === null || binary || tooBig || saving) return;
+    if (binary || tooBig || saving || !dirtyRef.current) return;
     setSaving(true);
     setError('');
     try {
-      await api('/api/sftp/write', { method: 'POST', body: JSON.stringify({ hostId: Number(tab.hostId), path: tab.path, content }) });
+      await api('/api/sftp/write', {
+        method: 'POST',
+        body: JSON.stringify({ hostId: Number(tab.hostId), path: tab.path, content }),
+      });
       setDirty(false);
+      setEditorDirty(tab.id, false);
       const parent = tab.path.slice(0, tab.path.lastIndexOf('/')) || '/';
       useStore.getState().invalidateSftpPath(tab.hostId, parent);
       pushToast({ hostName: tab.hostName, kind: 'success', text: `已保存 ${tab.name}` });
@@ -64,7 +78,7 @@ export function EditorTab({ tab }: { tab: Extract<OuterTab, { kind: 'editor' }> 
     } finally {
       setSaving(false);
     }
-  }, [content, binary, tooBig, saving, tab, pushToast]);
+  }, [binary, tooBig, saving, content, tab, pushToast, setEditorDirty]);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent): void => {
@@ -77,17 +91,11 @@ export function EditorTab({ tab }: { tab: Extract<OuterTab, { kind: 'editor' }> 
     return () => window.removeEventListener('keydown', onKey);
   }, [save]);
 
-  const onSelect = (): void => {
-    const el = taRef.current;
-    if (!el) return;
-    const pos = el.selectionStart;
-    const before = el.value.slice(0, pos);
-    const line = before.split('\n').length;
-    const col = pos - before.lastIndexOf('\n');
-    setCursor({ line, col });
+  const markDirty = (text: string): void => {
+    setContent(text); // 同步最新内容（保存/大小显示）
+    setDirty(true);
+    setEditorDirty(tab.id, true);
   };
-
-  const readOnly = binary || tooBig;
 
   return (
     <div className="flex h-full min-h-0 flex-col bg-[#1e1e1e]">
@@ -97,7 +105,7 @@ export function EditorTab({ tab }: { tab: Extract<OuterTab, { kind: 'editor' }> 
           <path d="M2 1.5h4.5l2 2H14a1 1 0 011 1V13a1 1 0 01-1 1H2a1 1 0 01-1-1V2.5a1 1 0 011-1z" />
         </svg>
         <span className="truncate font-mono text-[#9cdcfe]">{tab.path}</span>
-        {dirty && <span className="shrink-0 rounded-sm bg-[#3b3b1d] px-1.5 py-0.5 text-[10px] text-[#cca700]">未保存</span>}
+        {dirty && <span className="shrink-0 rounded-sm bg-[#3b3b1d] px-1.5 py-0.5 text-[10px] text-[#cca700]">● 未保存</span>}
         {tooBig && <span className="shrink-0 rounded-sm bg-[#3b1d1d] px-1.5 py-0.5 text-[10px] text-[#f14c4c]">超过 5MB，只读</span>}
         {binary && <span className="shrink-0 rounded-sm bg-[#3b1d1d] px-1.5 py-0.5 text-[10px] text-[#f14c4c]">二进制文件</span>}
         <span className="ml-auto flex shrink-0 items-center gap-1">
@@ -110,10 +118,10 @@ export function EditorTab({ tab }: { tab: Extract<OuterTab, { kind: 'editor' }> 
           </button>
           <button
             onClick={() => void save()}
-            disabled={readOnly || saving || content === null}
+            disabled={binary || tooBig || saving || !dirty}
             title="保存 (Ctrl+S)"
             className={`rounded-sm px-2.5 py-0.5 font-medium ${
-              dirty && !readOnly
+              dirty && !binary && !tooBig
                 ? 'bg-[#0e639c] text-white hover:bg-[#1177bb]'
                 : 'border border-[#3c3c3c] text-[#858585] hover:bg-[#3a3d41]'
             } disabled:cursor-not-allowed disabled:opacity-50`}
@@ -130,31 +138,24 @@ export function EditorTab({ tab }: { tab: Extract<OuterTab, { kind: 'editor' }> 
         </span>
       </div>
       {error && <div className="border-b border-[#252526] bg-[#3b1d1d] px-3 py-1 text-[11px] text-[#f14c4c]">{error}</div>}
-      {/* 编辑区 */}
+      {/* 编辑区：CodeMirror 语法高亮；超限/二进制只读 */}
       <div className="relative min-h-0 flex-1">
-        {content === null ? (
+        {!loaded ? (
           <div className="flex h-full items-center justify-center text-[#5a5a5a]">加载中…</div>
-        ) : readOnly ? (
+        ) : binary ? (
           <div className="flex h-full flex-col items-center justify-center gap-2 text-[#5a5a5a]">
             <div className="text-3xl">🚫</div>
-            <div>{binary ? '二进制文件无法编辑' : '文件超过 5MB 编辑上限，仅可下载'}</div>
+            <div>二进制文件无法编辑</div>
             <div className="font-mono text-[11px]">{tab.path}</div>
           </div>
         ) : (
-          <textarea
-            ref={taRef}
-            value={content}
-            onChange={(e) => {
-              setContent(e.target.value);
-              setDirty(true);
-            }}
-            onSelect={onSelect}
-            onClick={onSelect}
-            onKeyUp={onSelect}
-            spellCheck={false}
-            autoCapitalize="off"
-            autoCorrect="off"
-            className="absolute inset-0 h-full w-full resize-none bg-transparent p-3 font-mono text-[13px] leading-relaxed text-[#d4d4d4] caret-[#aeafad] outline-none selection:bg-[#264f78]"
+          <FileEditor
+            key={editorKey}
+            initialContent={content}
+            filename={tab.name}
+            readOnly={tooBig}
+            onChange={markDirty}
+            onCursor={(line, col) => setCursor({ line, col })}
           />
         )}
       </div>
@@ -162,7 +163,8 @@ export function EditorTab({ tab }: { tab: Extract<OuterTab, { kind: 'editor' }> 
       <div className="flex h-6 shrink-0 items-center gap-3 border-t border-[#252526] bg-[#007acc] px-3 text-[11px] text-white">
         <span>{tab.hostName}</span>
         <span>{tab.name}</span>
-        {content !== null && !binary && <span>{fmtBytes(new Blob([content]).size)}</span>}
+        {!binary && <span>{fmtBytes(new Blob([content]).size)}</span>}
+        {tooBig && <span className="text-[#ffd700]">只读</span>}
         <span className="ml-auto">行 {cursor.line}, 列 {cursor.col}</span>
       </div>
     </div>

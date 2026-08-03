@@ -347,6 +347,8 @@ interface AppState {
   sftpExpanded: Record<string, boolean>;
   /** SFTP 剪贴板（复制/剪切） */
   sftpClipboard: SftpClipboard | null;
+  /** 编辑器 dirty 状态：editor tab id → 未保存（tab 栏显示 ●） */
+  editorDirty: Record<string, boolean>;
 
   setAuthed: (v: boolean) => void;
   setView: (v: View) => void;
@@ -366,6 +368,7 @@ interface AppState {
   setSftpCache: (key: string, items: import('./api').SftpItem[]) => void;
   toggleSftpExpand: (path: string) => void;
   setSftpClipboard: (c: SftpClipboard | null) => void;
+  setEditorDirty: (id: string, dirty: boolean) => void;
   /** 幂等展开（reveal 用，不翻转） */
   expandSftpPath: (path: string) => void;
   /** 打开/激活主机外层 tab（终端相关动作内部调用） */
@@ -518,6 +521,7 @@ export const useStore = create<AppState>((set, get) => ({
   sftpCache: {},
   sftpExpanded: {},
   sftpClipboard: null,
+  editorDirty: {},
 
   setAuthed: (v) => set({ authed: v }),
   setView: (v) => set({ view: v }),
@@ -736,6 +740,14 @@ export const useStore = create<AppState>((set, get) => ({
     set({ sftpExpanded: { ...get().sftpExpanded, [path]: !get().sftpExpanded[path] } }),
   expandSftpPath: (path) => set({ sftpExpanded: { ...get().sftpExpanded, [path]: true } }),
   setSftpClipboard: (c) => set({ sftpClipboard: c }),
+
+  setEditorDirty: (id, dirty) =>
+    set((st) => {
+      const next = { ...st.editorDirty };
+      if (dirty) next[id] = true;
+      else delete next[id];
+      return { editorDirty: next };
+    }),
 
   /** 打开主机工作区（外层激活）；已有工作区则加入第一个组（不分屏） */
   addTab: (host) => {

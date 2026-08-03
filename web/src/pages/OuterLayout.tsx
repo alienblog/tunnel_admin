@@ -81,6 +81,7 @@ function OuterGroupPanel({ node }: { node: Extract<LayoutNode, { type: 'group' }
   const setActiveOuter = useStore((s) => s.setActiveOuter);
   const closeOuterTab = useStore((s) => s.closeOuterTab);
   const setOuterDragId = useStore((s) => s.setOuterDragId);
+  const editorDirty = useStore((s) => s.editorDirty);
   const activeId = node.activeTabId ?? node.tabIds[0] ?? null;
 
   return (
@@ -109,6 +110,9 @@ function OuterGroupPanel({ node }: { node: Extract<LayoutNode, { type: 'group' }
               }`}
             >
               <OuterTabIcon tab={tab} />
+              {tab.kind === 'editor' && editorDirty[tab.id] && (
+                <span title="未保存" className="shrink-0 text-[10px] text-[#cca700]">●</span>
+              )}
               <span className="max-w-32 truncate">{label}</span>
               <button
                 onClick={(e) => {
