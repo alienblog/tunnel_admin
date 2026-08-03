@@ -383,7 +383,7 @@ function StatusBar() {
         <MetricsBar />
       </div>
       <span className="hidden whitespace-nowrap md:inline">MCP: {location.origin}/mcp</span>
-      <span className="whitespace-nowrap">v0.2.1</span>
+      <span className="whitespace-nowrap">v0.2.2</span>
     </div>
   );
 }
