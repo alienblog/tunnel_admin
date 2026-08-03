@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { api, type ApprovalInfo } from './api';
+import { getDesktop } from './desktop';
 import { ws, type SessionInfo } from './ws';
 import { useStore, type HostMetrics, type OuterTab, type Toast, type View } from './store';
 import SideBar from './components/SideBar';
@@ -133,20 +134,23 @@ function ActivityBar({
           </button>
         );
       })}
-      <button
-        title="退出登录"
-        onClick={() => {
-          void api('/api/logout', { method: 'POST' }).finally(() => {
-            ws.close();
-            useStore.getState().setAuthed(false);
-          });
-        }}
-        className="flex h-12 w-12 items-center justify-center text-[#858585] hover:text-white"
-      >
-        <svg viewBox="0 0 16 16" className="h-5 w-5" fill="currentColor">
-          <path d="M6.5 8a.75.75 0 001.5 0V1.75a.75.75 0 00-1.5 0V8zm-3.17 1.41a.75.75 0 10-1.06-1.06l-1.5 1.5a.75.75 0 000 1.06l1.5 1.5a.75.75 0 101.06-1.06l-.97-.97h3.14a.75.75 0 000-1.5H2.36l.97-.97zM8 3.5a.75.75 0 000-1.5H5.5A1.5 1.5 0 004 3.5V5a.75.75 0 001.5 0V3.5H8z" />
-        </svg>
-      </button>
+      {/* 桌面版（免登录）不显示退出登录 */}
+      {!getDesktop() && (
+        <button
+          title="退出登录"
+          onClick={() => {
+            void api('/api/logout', { method: 'POST' }).finally(() => {
+              ws.close();
+              useStore.getState().setAuthed(false);
+            });
+          }}
+          className="flex h-12 w-12 items-center justify-center text-[#858585] hover:text-white"
+        >
+          <svg viewBox="0 0 16 16" className="h-5 w-5" fill="currentColor">
+            <path d="M6.5 8a.75.75 0 001.5 0V1.75a.75.75 0 00-1.5 0V8zm-3.17 1.41a.75.75 0 10-1.06-1.06l-1.5 1.5a.75.75 0 000 1.06l1.5 1.5a.75.75 0 101.06-1.06l-.97-.97h3.14a.75.75 0 000-1.5H2.36l.97-.97zM8 3.5a.75.75 0 000-1.5H5.5A1.5 1.5 0 004 3.5V5a.75.75 0 001.5 0V3.5H8z" />
+          </svg>
+        </button>
+      )}
     </div>
   );
 }
