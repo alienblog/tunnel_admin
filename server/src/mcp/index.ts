@@ -4,6 +4,12 @@ import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/
 import { registerTools, type McpDeps } from './tools.js';
 import { verifyMcpToken } from '../routes/tokens.js';
 import { decryptText } from '../crypto.js';
+import type { McpPortManager } from '../mcpPortManager.js';
+
+export type { McpDeps } from './tools.js';
+export interface McpDepsWithPorts extends McpDeps {
+  mcpPorts: McpPortManager;
+}
 
 const MCP_TOOLS: ReadonlyArray<readonly [string, string]> = [
   ['ssh_list_hosts', '列出所有可连接的主机（含 ID、名称、地址、分组、信任状态）'],
@@ -24,14 +30,14 @@ const MCP_TOOLS: ReadonlyArray<readonly [string, string]> = [
   ['ssh_stop_forward', '停止端口转发'],
 ];
 
-/** 从请求 Host 头推导对外地址（含 MCP 独立端口时替换端口） */
-function mcpOrigin(req: FastifyRequest, deps: McpDeps): string {
+/** 从请求 Host 头推导对外地址（含 MCP 独立端口时替换端口；优先动态生效端口） */
+function mcpOrigin(req: FastifyRequest, deps: McpDepsWithPorts): string {
   const header = req.headers.host ?? '';
   const idx = header.lastIndexOf(':');
   // 无端口 / IPv6 字面量（含 ]）→ 用配置端口
   let hostname = header;
   if (idx > 0 && !header.includes(']')) hostname = header.slice(0, idx);
-  const port = deps.config.mcpPort ?? deps.config.port;
+  const port = deps.mcpPorts.port ?? deps.config.mcpPort ?? deps.config.port;
   const proto = req.protocol;
   return port === 80 && proto === 'http' || port === 443 && proto === 'https'
     ? `${proto}://${hostname}`
@@ -42,10 +48,11 @@ function mcpOrigin(req: FastifyRequest, deps: McpDeps): string {
  * MCP 接入提示词路由（挂主 app）：动态地址 + 令牌选择 + 明文回显。
  * ?tokenId=<id> 指定令牌；不传则用第一个未吊销令牌。
  */
-export function registerMcpPrompt(app: FastifyInstance, deps: McpDeps): void {
+export function registerMcpPrompt(app: FastifyInstance, deps: McpDepsWithPorts): void {
   // 当前 MCP endpoint 地址（含独立端口），设置页展示
   app.get('/api/mcp/info', async (req) => {
-    return { url: `${mcpOrigin(req, deps)}/mcp`, port: deps.config.mcpPort ?? deps.config.port };
+    const port = deps.mcpPorts.port ?? deps.config.mcpPort ?? deps.config.port;
+    return { url: `${mcpOrigin(req, deps)}/mcp`, port };
   });
 
   app.get('/api/mcp/prompt', async (req, reply) => {
@@ -135,7 +142,7 @@ export function registerMcpEndpoint(app: FastifyInstance, deps: McpDeps): void {
 }
 
 /** 兼容旧调用（挂主 app：prompt + endpoint 同端口） */
-export function registerMcp(app: FastifyInstance, deps: McpDeps): void {
+export function registerMcp(app: FastifyInstance, deps: McpDepsWithPorts): void {
   registerMcpPrompt(app, deps);
   registerMcpEndpoint(app, deps);
 }

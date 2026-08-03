@@ -82,10 +82,19 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     console.log(`[config] 密码哈希已保存: ${pwdFile}（可用 TUNNELADMIN_PASSWORD 环境变量覆盖）`);
   }
 
+  // MCP 独立端口：环境变量 > data/config.json（设置页保存）> 默认（不独立）
+  let savedMcpPort: number | null = null;
+  try {
+    const saved = JSON.parse(fs.readFileSync(path.join(dataDir, 'config.json'), 'utf8')) as { mcpPort?: number | null };
+    savedMcpPort = saved.mcpPort ?? null;
+  } catch {
+    // 无配置文件
+  }
+
   return {
     port: parseInt(env.PORT ?? env.TUNNELADMIN_PORT ?? '8080', 10),
     host: env.HOST ?? '0.0.0.0',
-    mcpPort: env.TUNNELADMIN_MCP_PORT ? parseInt(env.TUNNELADMIN_MCP_PORT, 10) || null : null,
+    mcpPort: env.TUNNELADMIN_MCP_PORT ? parseInt(env.TUNNELADMIN_MCP_PORT, 10) || null : savedMcpPort,
     dataDir,
     masterKey,
     passwordHash,

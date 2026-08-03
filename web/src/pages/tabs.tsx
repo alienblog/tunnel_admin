@@ -316,6 +316,10 @@ function McpSettings() {
   const [mcpUrl, setMcpUrl] = useState('');
   /** 待选择令牌（多个令牌时弹选择行） */
   const [promptPick, setPromptPick] = useState(false);
+  /** MCP 端口配置 */
+  const [mcpPortInput, setMcpPortInput] = useState('');
+  const [mcpPortSaving, setMcpPortSaving] = useState(false);
+  const [portEnvOverride, setPortEnvOverride] = useState(false);
 
   const loadRules = useCallback(async (): Promise<void> => {
     try {
@@ -336,8 +340,14 @@ function McpSettings() {
   useEffect(() => {
     void loadRules();
     void loadTokens();
-    void api<{ url: string }>('/api/mcp/info')
-      .then((r) => setMcpUrl(r.url))
+    void api<{ url: string; port: number }>('/api/mcp/info')
+      .then((r) => {
+        setMcpUrl(r.url);
+        setMcpPortInput(String(r.port));
+      })
+      .catch(() => {});
+    void api<{ port: number | null; envOverride: number | null }>('/api/mcp/port')
+      .then((r) => setPortEnvOverride(r.envOverride !== null))
       .catch(() => {});
   }, [loadRules, loadTokens]);
 
@@ -413,6 +423,36 @@ function McpSettings() {
 
   const availableTokens = tokens.filter((t) => !t.revoked);
 
+  /** 保存 MCP 端口（保存即生效，持久化到服务端 data/config.json） */
+  const saveMcpPort = async (): Promise<void> => {
+    const raw = mcpPortInput.trim();
+    const port = raw === '' ? null : Number(raw);
+    if (port !== null && (!Number.isInteger(port) || port < 1 || port > 65535)) {
+      setError('端口必须是 1-65535 的整数');
+      return;
+    }
+    setMcpPortSaving(true);
+    setError('');
+    try {
+      const r = await api<{ ok: boolean; port: number | null }>('/api/mcp/port', {
+        method: 'POST',
+        body: JSON.stringify({ port }),
+      });
+      const info = await api<{ url: string; port: number }>('/api/mcp/info');
+      setMcpUrl(info.url);
+      setMcpPortInput(r.port === null ? String(info.port) : String(r.port));
+      pushToast({
+        hostName: 'MCP',
+        kind: 'success',
+        text: r.port === null ? 'MCP 已切回主服务端口' : `MCP 端口已切换为 ${r.port}（保存即生效）`,
+      });
+    } catch (err) {
+      setError(`端口设置失败：${(err as Error).message}`);
+    } finally {
+      setMcpPortSaving(false);
+    }
+  };
+
   return (
     <div className="flex flex-col gap-4">
       <div>
@@ -432,8 +472,46 @@ function McpSettings() {
         {mcpUrl && (
           <div className="mt-1.5 text-[11px] leading-relaxed text-[#5a5a5a]">
             MCP 地址：<code className="rounded-sm bg-[#1e1e1e] px-1 font-mono text-[10px] text-[#4ec9b0]">{mcpUrl}</code>
-            <span className="ml-1">（端口由服务端 TUNNELADMIN_MCP_PORT 配置）</span>
           </div>
+        )}
+        {/* MCP 端口配置：手动输入或随机生成，保存即生效 */}
+        <div className="mt-2 flex flex-wrap items-center gap-1.5">
+          <span className="text-[11px] text-[#858585]">MCP 端口：</span>
+          <input
+            value={mcpPortInput}
+            onChange={(e) => setMcpPortInput(e.target.value)}
+            placeholder="留空 = 使用主服务端口"
+            className={`${inputCls} w-28 font-mono`}
+          />
+          <button
+            title="随机生成端口"
+            onClick={() => setMcpPortInput(String(10000 + Math.floor(Math.random() * 50000)))}
+            className="rounded-sm border border-[#3c3c3c] px-2 py-1 text-[11px] text-[#cccccc] hover:bg-[#2a2d2e]"
+          >
+            🎲 随机
+          </button>
+          <button
+            title="保存并应用端口"
+            onClick={() => void saveMcpPort()}
+            disabled={mcpPortSaving || portEnvOverride}
+            className="rounded-sm bg-[#0e639c] px-2.5 py-1 text-[11px] font-medium text-white hover:bg-[#1177bb] disabled:opacity-60"
+          >
+            {mcpPortSaving ? '保存中…' : '保存'}
+          </button>
+          <button
+            title="关闭独立端口（MCP 回到主服务端口）"
+            onClick={() => {
+              setMcpPortInput('');
+              void saveMcpPort();
+            }}
+            disabled={mcpPortSaving || portEnvOverride}
+            className="rounded-sm border border-[#3c3c3c] px-2 py-1 text-[11px] text-[#858585] hover:bg-[#2a2d2e] disabled:opacity-60"
+          >
+            关闭独立端口
+          </button>
+        </div>
+        {portEnvOverride && (
+          <div className="mt-1 text-[11px] text-[#cca700]">已设置 TUNNELADMIN_MCP_PORT 环境变量，端口由环境变量控制</div>
         )}
         {promptPick && availableTokens.length > 1 && (
           <div className="mt-1.5 flex flex-wrap items-center gap-1">

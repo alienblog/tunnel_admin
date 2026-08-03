@@ -21,6 +21,8 @@ import { registerComplete } from './routes/complete.js';
 import { registerForward } from './routes/forward.js';
 import { registerWs } from './ws.js';
 import { registerMcpEndpoint, registerMcpPrompt } from './mcp/index.js';
+import { McpPortManager } from './mcpPortManager.js';
+import { registerMcpPortSettings } from './routes/mcpPort.js';
 
 const config = loadConfig();
 const db = openDb(config.dataDir);
@@ -49,15 +51,18 @@ registerForward(app, config, db, sshManager);
 // WebSocket 事件桥（终端 + 审批推送）
 registerWs(app, config, sshManager);
 
-// MCP 接入提示词（主 API 提供，地址按 MCP 实际端口动态生成）
-registerMcpPrompt(app, { config, db, sshManager, approvals });
-
-// MCP Streamable HTTP endpoint：配置了 TUNNELADMIN_MCP_PORT 时独立监听该端口
+// MCP：独立端口管理器（设置页可运行时配置端口；未启用时 MCP 挂主服务 /mcp）
 const mcpDeps = { config, db, sshManager, approvals };
+const mcpPorts = new McpPortManager(mcpDeps);
+
+// MCP 接入提示词（主 API 提供，地址按 MCP 实际端口动态生成）
+registerMcpPrompt(app, { config, db, sshManager, approvals, mcpPorts });
+// MCP 端口设置接口（手动输入/随机生成，保存即生效并持久化到 data/config.json）
+registerMcpPortSettings(app, config, mcpPorts);
+
+// 启动时按配置启用独立端口；否则 MCP 挂主服务
 if (config.mcpPort && config.mcpPort !== config.port) {
-  const mcpApp = Fastify({ logger: { level: process.env.LOG_LEVEL ?? 'info' } });
-  registerMcpEndpoint(mcpApp, mcpDeps);
-  await mcpApp.listen({ port: config.mcpPort, host: config.host });
+  await mcpPorts.apply(config.mcpPort);
 } else {
   registerMcpEndpoint(app, mcpDeps);
 }
@@ -82,6 +87,7 @@ if (fs.existsSync(webDist)) {
 const shutdown = (): void => {
   app.log.info('正在关闭…');
   sshManager.closeAll();
+  void mcpPorts.close();
   db.close();
   app.close().then(() => process.exit(0)).catch(() => process.exit(1));
 };
