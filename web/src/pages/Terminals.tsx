@@ -1,11 +1,13 @@
-import { useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   useStore,
   collectGroups,
   collectLeaves,
+  computeLeafRects,
   type DropPos,
   type LayoutNode,
   type OuterTab,
+  type Rect,
 } from '../store';
 import TerminalView from '../components/TerminalView';
 import { AuditTab, EditorTab, SettingsTab, TransferTab } from './tabs';
@@ -84,7 +86,6 @@ function InnerTab({ tabId, groupId }: { tabId: string; groupId: string }) {
 /** 终端组面板：tab 栏 + 内容 + 拖拽停靠目标 */
 function GroupPanel({ node, hostId }: { node: Extract<LayoutNode, { type: 'group' }>; hostId: string }) {
   const activeTabId = node.activeTabId ?? node.tabIds[0] ?? null;
-  const tabs = useStore((s) => s.tabs);
   const addTerminalToGroup = useStore((s) => s.addTerminalToGroup);
   const moveTab = useStore((s) => s.moveTab);
   const setActiveTab = useStore((s) => s.setActiveTab);
@@ -136,7 +137,7 @@ function GroupPanel({ node, hostId }: { node: Extract<LayoutNode, { type: 'group
           ＋
         </button>
       </div>
-      {/* 内容 + 拖拽停靠目标：组内所有终端保持挂载（切换 tab 不卸载、不重连），非活动隐藏 */}
+      {/* 内容 + 拖拽停靠目标：终端本体由 TerminalPool 按布局矩形绝对定位渲染（布局重组不卸载、不重连） */}
       <div
         className="relative min-h-0 flex-1"
         onClick={() => activeTabId && setActiveTab(activeTabId)}
@@ -144,21 +145,11 @@ function GroupPanel({ node, hostId }: { node: Extract<LayoutNode, { type: 'group
         onDragLeave={() => setDropPos(null)}
         onDrop={onDrop}
       >
-        {node.tabIds.map((id) => {
-          const t = tabs.find((x) => x.id === id);
-          if (!t) return null;
-          const isActiveTab = activeTabId === id;
-          return (
-            <div key={id} className={`absolute inset-0 ${isActiveTab ? '' : 'hidden'}`}>
-              <TerminalView tab={t} />
-            </div>
-          );
-        })}
         {node.tabIds.length === 0 && (
           <div className="flex h-full items-center justify-center text-[#5a5a5a]">终端已关闭</div>
         )}
         {dropPos && (
-          <div className={`pointer-events-none absolute ${indicator[dropPos]} bg-[#007acc]/30`} />
+          <div className={`pointer-events-none absolute z-20 ${indicator[dropPos]} bg-[#007acc]/30`} />
         )}
       </div>
     </div>
@@ -223,9 +214,57 @@ function SplitView({ node, hostId }: { node: Extract<LayoutNode, { type: 'split'
 
 function LayoutNodeView({ node, hostId }: { node: LayoutNode; hostId: string }) {
   // key = node.id：布局重组（拖拽移动 tab / 分屏调整）时 React 按 key 保留组件实例，
-  // 未移动的终端不卸载、连接不中断
+  // 未移动的面板不卸载（终端本体在 TerminalPool，天然不受布局重组影响）
   if (node.type === 'group') return <GroupPanel key={node.id} node={node} hostId={hostId} />;
   return <SplitView key={node.id} node={node} hostId={hostId} />;
+}
+
+/**
+ * 主机工作区：布局壳（tab 栏 / 分隔栏 / 拖拽停靠） + 终端池（绝对定位渲染 TerminalView）。
+ * 终端池独立于布局树：拖拽分屏 / 合并 / 根节点类型变化时 TerminalView 永不卸载，
+ * 连接与 xterm 历史完整保留；布局变化只更新每个 tab 的视口矩形。
+ */
+function HostWorkspace({ hostId }: { hostId: string }) {
+  const containerRef = useRef<HTMLDivElement>(null);
+  const layout = useStore((s) => s.hostLayouts[hostId]);
+  const tabs = useStore((s) => s.tabs);
+  const [size, setSize] = useState<{ w: number; h: number }>({ w: 0, h: 0 });
+
+  useEffect(() => {
+    const el = containerRef.current;
+    if (!el) return;
+    const measure = (): void => {
+      const r = el.getBoundingClientRect();
+      setSize((prev) => (prev.w === r.width && prev.h === r.height ? prev : { w: r.width, h: r.height }));
+    };
+    measure();
+    const ro = new ResizeObserver(measure);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
+
+  const rects = useMemo(() => {
+    if (!layout || size.w === 0 || size.h === 0) return new Map<string, Rect>();
+    return computeLeafRects(layout, { x: 0, y: 0, w: size.w, h: size.h });
+  }, [layout, size]);
+
+  const hostTabs = useMemo(
+    () => tabs.filter((t) => t.hostId === Number(hostId)),
+    [tabs, hostId],
+  );
+
+  return (
+    <div ref={containerRef} className="relative h-full min-h-0 min-w-0">
+      {layout ? (
+        <LayoutNodeView node={layout} hostId={hostId} />
+      ) : (
+        <div className="flex h-full items-center justify-center text-[#5a5a5a]">终端已全部关闭</div>
+      )}
+      {hostTabs.map((t) => (
+        <TerminalView key={t.id} tab={t} rect={rects.get(t.id) ?? null} />
+      ))}
+    </div>
+  );
 }
 
 /** 外层 tab 标签图标 */
@@ -350,15 +389,8 @@ export default function Terminals() {
         {outerTabs
           .filter((t): t is Extract<OuterTab, { kind: 'host' }> => t.kind === 'host')
           .map((tab) => (
-            <div
-              key={tab.id}
-              className={`absolute inset-0 ${activeOuterId === tab.id ? '' : 'hidden'}`}
-            >
-              {hostLayouts[tab.hostId] ? (
-                <LayoutNodeView node={hostLayouts[tab.hostId]} hostId={tab.hostId} />
-              ) : (
-                <div className="flex h-full items-center justify-center text-[#5a5a5a]">终端已全部关闭</div>
-              )}
+            <div key={tab.id} className={`absolute inset-0 ${activeOuterId === tab.id ? '' : 'hidden'}`}>
+              <HostWorkspace hostId={tab.hostId} />
             </div>
           ))}
         {/* 工具 tab：编辑器 / 设置 / 传输 / 审计（无长连接，切换即卸载） */}

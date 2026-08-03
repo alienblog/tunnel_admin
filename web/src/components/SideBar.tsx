@@ -26,8 +26,8 @@ function HostRow({ host, onActivate, onEdit }: { host: Host; onActivate: () => v
   return (
     <div
       className="group flex cursor-pointer items-center gap-1.5 rounded-sm px-2 py-[3px] text-[13px] text-[#cccccc] hover:bg-[#2a2d2e]"
-      onClick={onActivate}
-      title={`${host.username}@${host.host}:${host.port}`}
+      onDoubleClick={onActivate}
+      title={`${host.username}@${host.host}:${host.port}（双击打开终端）`}
     >
       <svg viewBox="0 0 16 16" className="h-3.5 w-3.5 shrink-0 text-[#858585]" fill="currentColor">
         <path d="M1 3.5A1.5 1.5 0 012.5 2h3.086c.398 0 .78.158 1.061.44l.914.914H13.5A1.5 1.5 0 0115 4.854v7.146a1.5 1.5 0 01-1.5 1.5h-11A1.5 1.5 0 011 12V3.5z" />
@@ -174,6 +174,15 @@ function HostsSideBar() {
   const closeHostModal = useStore((s) => s.closeHostModal);
   const grouped = useMemo(() => groupHosts(hosts), [hosts]);
 
+  // 模态：ESC 关闭（点击遮罩不关闭，需显式操作）
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent): void => {
+      if (e.key === 'Escape' && useStore.getState().hostModal.open) useStore.getState().closeHostModal();
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, []);
+
   const remove = async (h: Host): Promise<void> => {
     if (!confirm(`确认删除主机「${h.name}」？`)) return;
     try {
@@ -225,12 +234,18 @@ function HostsSideBar() {
       </div>
 
       {hostModal.open && (
-        <div className="fixed inset-0 z-40 flex items-center justify-center bg-black/60" onClick={closeHostModal}>
-          <div
-            className="max-h-[90vh] w-160 max-w-[92vw] overflow-auto rounded-sm border border-[#3c3c3c] bg-[#252526] p-6"
-            onClick={(e) => e.stopPropagation()}
-          >
-            <h2 className="mb-4 text-base font-semibold text-[#cccccc]">{hostModal.editing ? '编辑主机' : '新建主机'}</h2>
+        <div className="fixed inset-0 z-40 flex items-center justify-center bg-black/60">
+          <div className="max-h-[90vh] w-160 max-w-[92vw] overflow-auto rounded-sm border border-[#3c3c3c] bg-[#252526] p-6">
+            <div className="mb-4 flex items-center justify-between">
+              <h2 className="text-base font-semibold text-[#cccccc]">{hostModal.editing ? '编辑主机' : '新建主机'}</h2>
+              <button
+                title="关闭"
+                onClick={closeHostModal}
+                className="rounded-sm px-1.5 text-[#969696] hover:bg-[#3a3d41] hover:text-white"
+              >
+                ✕
+              </button>
+            </div>
             <HostForm initial={hostModal.editing} onDone={closeHostModal} />
           </div>
         </div>

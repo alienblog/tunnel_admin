@@ -64,6 +64,7 @@ CREATE TABLE IF NOT EXISTS mcp_tokens (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   name TEXT NOT NULL,
   token_hash TEXT NOT NULL UNIQUE,
+  token_enc TEXT,
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
   last_used_at TEXT,
   revoked INTEGER NOT NULL DEFAULT 0
@@ -103,6 +104,12 @@ export function openDb(dataDir: string): Database.Database {
   db.pragma('journal_mode = WAL');
   db.pragma('foreign_keys = ON');
   db.exec(SCHEMA);
+  // 迁移：mcp_tokens 补充 token_enc 列（AES 加密的明文令牌，供接入提示词回显；旧令牌为空）
+  try {
+    db.exec('ALTER TABLE mcp_tokens ADD COLUMN token_enc TEXT');
+  } catch {
+    // 列已存在
+  }
   // 迁移：旧库 cmd_rules 表无 UNIQUE 约束时 seed 会重复，去重保留最小 id
   db.exec('DELETE FROM cmd_rules WHERE id NOT IN (SELECT MIN(id) FROM cmd_rules GROUP BY pattern)');
   return db;

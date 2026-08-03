@@ -5,7 +5,7 @@
  * - 数据目录指向 Electron userData（~/.config/tunneladmin）
  * - 加载 http://127.0.0.1:<port>，关闭时结束 server 子进程
  */
-const { app, BrowserWindow, dialog } = require('electron');
+const { app, BrowserWindow, dialog, ipcMain, shell, session } = require('electron');
 const path = require('node:path');
 const fs = require('node:fs');
 const { launchServer } = require('./server-launch');
@@ -59,6 +59,21 @@ if (!gotLock) {
   });
 
   app.whenReady().then(async () => {
+    // 下载完成 → 通知渲染进程保存路径（传输管理器「📂 定位」按钮用）
+    session.defaultSession.on('will-download', (_e, item) => {
+      const name = item.getFilename();
+      const savePath = item.getSavePath();
+      item.once('done', (_ev, state) => {
+        if (state !== 'completed') return;
+        for (const w of BrowserWindow.getAllWindows()) {
+          w.webContents.send('ta:download-done', { name, path: savePath });
+        }
+      });
+    });
+    ipcMain.on('ta:show-item', (_e, p) => {
+      if (typeof p === 'string' && p) shell.showItemInFolder(p);
+    });
+
     let port;
     try {
       port = await startServer();
@@ -78,6 +93,7 @@ if (!gotLock) {
       webPreferences: {
         contextIsolation: true,
         nodeIntegration: false,
+        preload: path.join(__dirname, 'preload.js'),
       },
     });
     win.loadURL(`http://127.0.0.1:${port}`);

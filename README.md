@@ -11,11 +11,11 @@
 
 | 模块 | 能力 |
 |---|---|
-| Web 终端 | 多标签/分屏（VSCode 编辑器组模型）、拖拽停靠、断线**自动重连**（指数退避，不丢现场）、tmux 会话持久（刷新/断连恢复）、Ctrl+F 搜索、命令补全、多行粘贴确认、主题预设、会话录制回放、连接状态徽标 |
-| 主机管理 | 分组/标签/备注、凭据 AES-256-GCM 加密落盘、每主机信任开关 |
-| SFTP 文件管理 | 目录浏览、拖拽上传（目录递归/进度条）、下载（流式+进度）、**双击文本编辑**（Ctrl+S 保存）、复制/剪切/粘贴、打包下载（tar 流式）、权限修改、文本预览、传输管理器（进行中/已完成） |
+| Web 终端 | 多标签/分屏（VSCode 编辑器组模型）、拖拽停靠（**布局重组零重连**）、断线**自动重连**（指数退避，历史不丢）、ws 断线补发恢复、tmux 会话持久（刷新/断连恢复）、`clear` 不清屏（滚动到顶部）、Ctrl+F 搜索、命令补全、多行粘贴确认、主题预设、会话录制回放、连接状态徽标 |
+| 主机管理 | 分组/标签/备注、凭据 AES-256-GCM 加密落盘、每主机信任开关、侧栏**双击**打开终端、编辑弹窗模态化（ESC/按钮关闭） |
+| SFTP 文件管理 | 目录浏览、拖拽上传（目录递归/进度条）、下载（流式+进度）、**双击文本编辑**（Ctrl+S 保存）、复制/剪切/粘贴、打包下载（tar 流式）、权限修改、文本预览、传输管理器（进行中/已完成，桌面端下载后📂一键定位文件） |
 | 端口转发 | 远程转发为主：把目标内网端口暴露到部署服务器端口 |
-| MCP Server | 16 个工具：`ssh_list_hosts` / `ssh_connect` / `ssh_exec`（支持后台任务）/ `ssh_read_file` / `ssh_write_file` / `ssh_list_dir` / `ssh_stat` / `ssh_session_info` / `ssh_disconnect` / `ssh_job_status` / `ssh_tail`（流式跟踪）/ `ssh_tail_poll` / `ssh_tail_stop` / `ssh_port_forward` / `ssh_list_forwards` / `ssh_stop_forward`；会话保持 cwd，命令超时与输出截断 |
+| MCP Server | 独立监听端口可配（`TUNNELADMIN_MCP_PORT`）、接入提示词**动态生成**（地址/端口/令牌，多令牌可选），16 个工具：`ssh_list_hosts` / `ssh_connect` / `ssh_exec`（支持后台任务）/ `ssh_read_file` / `ssh_write_file` / `ssh_list_dir` / `ssh_stat` / `ssh_session_info` / `ssh_disconnect` / `ssh_job_status` / `ssh_tail`（流式跟踪）/ `ssh_tail_poll` / `ssh_tail_stop` / `ssh_port_forward` / `ssh_list_forwards` / `ssh_stop_forward`；会话保持 cwd，命令超时与输出截断 |
 | 危险命令规则 | 可配置正则规则（拦截/审批），如 `rm -rf /`、`mkfs` 默认拦截 |
 | 共享会话 | MCP 建立的连接实时出现在 Web 终端（🤖 标签），点击即可在同一连接上打开自己的终端同时操作；agent 每条命令与输出实时镜像到该视图 |
 | 连接审批 | agent 连接/危险命令请求实时推送 Web 弹窗，批准/拒绝/记住信任，60s 超时自动拒绝 |
@@ -134,8 +134,8 @@ scripts/            Windows 打包脚本（build-win.ps1 / bat）
 <!-- usage -->
 | 会话 | 输入 | 输出 | 缓存读 | 成本 |
 |---|---|---|---|---|
-| 1 | 566,921 | 1,136,316 | 605,990,144 | $2.09 |
-| **累计（1 个会话）** | **566,921** | **1,136,316** | **605,990,144** | **$2.09** |
+| 1 | 642,049 | 1,249,697 | 629,155,968 | $2.20 |
+| **累计（1 个会话）** | **642,049** | **1,249,697** | **629,155,968** | **$2.20** |
 <!-- /usage -->
 
 > 本表由 `node scripts/update-usage.cjs` 自动生成（提交前运行）：统计 `~/.omp/agent/sessions/-sources-tunneladmin/*.jsonl`，每个会话文件 = 一次会话；新会话自动累加进「累计」。

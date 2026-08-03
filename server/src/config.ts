@@ -8,6 +8,8 @@ export interface Config {
   port: number;
   /** 监听地址 */
   host: string;
+  /** MCP 独立监听端口（null = 与主服务同端口） */
+  mcpPort: number | null;
   /** 数据目录（SQLite、密钥文件） */
   dataDir: string;
   /** AES-256-GCM 主密钥 */
@@ -83,6 +85,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
   return {
     port: parseInt(env.PORT ?? env.TUNNELADMIN_PORT ?? '8080', 10),
     host: env.HOST ?? '0.0.0.0',
+    mcpPort: env.TUNNELADMIN_MCP_PORT ? parseInt(env.TUNNELADMIN_MCP_PORT, 10) || null : null,
     dataDir,
     masterKey,
     passwordHash,

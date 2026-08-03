@@ -1,4 +1,5 @@
 import { useStore } from './store';
+import { getDesktop } from './desktop';
 
 /**
  * 传输工具：上传（XHR 带进度）/ 下载（fetch 流式带进度），
@@ -70,6 +71,14 @@ export async function downloadWithProgress(
     size: 0,
     transferred: 0,
     status: 'running',
+  });
+  // 桌面端：浏览器下载完成后记录保存路径（供传输管理器「定位文件」）
+  const desktop = getDesktop();
+  const unsub = desktop?.onDownloadDone((info) => {
+    if (info.name === name) {
+      useStore.getState().updateTransfer(id, { localPath: info.path });
+      unsub?.();
+    }
   });
   try {
     const res = await fetch(url);

@@ -58,13 +58,15 @@ class WsClient {
     this.ws = ws;
 
     ws.onopen = () => {
+      const isReconnect = this.reconnectAttempt > 0;
       this.reconnectAttempt = 0;
       // 补发连接期间排队的消息（如页面刷新后立即发出的 terminal:open）
       if (this.pending.length > 0) {
         for (const m of this.pending) ws.send(m);
         this.pending = [];
       }
-      window.dispatchEvent(new CustomEvent('ta:ws:open'));
+      // reconnect=true：服务端已清理旧 stream（ws 断开时），终端需重新 open（attach tmux 恢复现场）
+      window.dispatchEvent(new CustomEvent('ta:ws:open', { detail: { reconnect: isReconnect } }));
     };
     ws.onmessage = (e) => {
       try {

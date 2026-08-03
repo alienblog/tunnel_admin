@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { memo, useEffect, useRef, useState } from 'react';
 import { Terminal } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import { SearchAddon } from '@xterm/addon-search';
@@ -7,7 +7,7 @@ import { THEMES } from '../themes';
 import ReplayOverlay from './ReplayOverlay';
 import { api } from '../api';
 import { ws } from '../ws';
-import { useStore, type TerminalTab } from '../store';
+import { useStore, type Rect, type TerminalTab } from '../store';
 
 
 interface CompletionItem {
@@ -53,7 +53,7 @@ function resolveCwd(cur: string | null, arg: string): string {
   return out === '/' ? '/' : out;
 }
 
-export default function TerminalView({ tab }: { tab: TerminalTab }) {
+function TerminalViewInner({ tab, rect }: { tab: TerminalTab; rect: Rect | null }) {
   const containerRef = useRef<HTMLDivElement>(null);
   const termRef = useRef<Terminal | null>(null);
   const fitRef = useRef<FitAddon | null>(null);
@@ -208,9 +208,10 @@ export default function TerminalView({ tab }: { tab: TerminalTab }) {
     });
     ro.observe(container);
 
-    // 输入：补全拦截 + 缓冲维护 + 终端发送
-    const onData = term.onData((d) => {
-      if (tab.ended) return;
+      // 输入缓冲维护 + clear 拦截 + 终端发送
+      // Enter：若整行是 clear，不发送（保留终端历史），仅把视口滚动到顶部
+      const onData = term.onData((d) => {
+        if (tab.ended) return;
       // Ctrl+F：打开搜索
       if (d === '\x06') {
         setSearchOpen(true);
@@ -251,6 +252,15 @@ export default function TerminalView({ tab }: { tab: TerminalTab }) {
       if (streamIdRef.current) ws.send({ type: 'terminal:input', streamId: streamIdRef.current, data: d });
 
       if (d === '\r' || d === '\n') {
+        if (cmdBufRef.current.trim() === 'clear') {
+          term.scrollToTop();
+          cmdBufRef.current = '';
+          cursorRef.current = 0;
+          clearTimeout(autoTimerRef.current);
+          return;
+        }
+        // 视口在顶部（如 clear 后）输入时滚回底部，避免看不到提示符
+        if (term.buffer.active.viewportY === 0) term.scrollToBottom();
         parseEnterCommand();
         // pwd 命令检测：回车时若缓冲的命令行为 pwd，等待输出中的路径行
         if (cmdBufRef.current.trim() === 'pwd') {
@@ -282,6 +292,8 @@ export default function TerminalView({ tab }: { tab: TerminalTab }) {
         cursorRef.current = 0;
         closeCompletion();
       } else if (!d.startsWith('\x1b')) {
+        // 视口在顶部（clear 后）时输入先滚回底部
+        if (term.buffer.active.viewportY === 0) term.scrollToBottom();
         // 多行粘贴确认（防误操作）
         if (d.length > 1 && /[\r\n]/.test(d)) {
           if (!window.confirm(`检测到多行粘贴（${d.length} 字符），确认发送到终端？`)) return;
@@ -399,6 +411,24 @@ export default function TerminalView({ tab }: { tab: TerminalTab }) {
       setConnBadge({ kind: 'connecting', text: e.message });
     });
 
+    // ws 重连（服务端重启 / 网络闪断）：服务端已清理旧 stream，重新 open 恢复现场（xterm 历史保留）
+    const onWsOpen = (e: Event): void => {
+      const detail = (e as CustomEvent<{ reconnect?: boolean }>).detail;
+      if (!detail?.reconnect) return;
+      if (isAgent || !streamIdRef.current || shouldReconnectRef.current) return;
+      streamIdRef.current = null;
+      setConnBadge({ kind: 'connecting', text: '连接恢复中…' });
+      ws.send({
+        type: 'terminal:open',
+        reqId: tab.id,
+        hostId: tab.hostId,
+        cols: term.cols,
+        rows: term.rows,
+        tmuxId: tab.id,
+      });
+    };
+    window.addEventListener('ta:ws:open', onWsOpen);
+
     // agent 会话视图：实时镜像 MCP 执行的命令与输出；后台命令完成时通知
     const offActivity = isAgent
       ? ws.on('exec:activity', (e) => {
@@ -451,6 +481,7 @@ export default function TerminalView({ tab }: { tab: TerminalTab }) {
 
     return () => {
       ro.disconnect();
+      window.removeEventListener('ta:ws:open', onWsOpen);
       onData.dispose();
       onResize.dispose();
       offData();
@@ -514,7 +545,7 @@ export default function TerminalView({ tab }: { tab: TerminalTab }) {
   }, [isActive]);
 
   return (
-    <div className="relative h-full w-full">
+    <div className="relative group" style={rect ? { position: 'absolute', left: rect.x, top: rect.y, width: rect.w, height: rect.h } : { display: 'none' }}>
       <div ref={containerRef} className="h-full w-full" />
       {/* 连接状态徽标（不写入终端文本；connected 2s 淡出，error/closed 常驻） */}
       {connBadge && (
@@ -651,3 +682,5 @@ export default function TerminalView({ tab }: { tab: TerminalTab }) {
     </div>
   );
 }
+
+export default memo(TerminalViewInner);

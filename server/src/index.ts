@@ -20,7 +20,7 @@ import { registerMetrics } from './routes/metrics.js';
 import { registerComplete } from './routes/complete.js';
 import { registerForward } from './routes/forward.js';
 import { registerWs } from './ws.js';
-import { registerMcp } from './mcp/index.js';
+import { registerMcpEndpoint, registerMcpPrompt } from './mcp/index.js';
 
 const config = loadConfig();
 const db = openDb(config.dataDir);
@@ -49,8 +49,18 @@ registerForward(app, config, db, sshManager);
 // WebSocket 事件桥（终端 + 审批推送）
 registerWs(app, config, sshManager);
 
-// MCP Streamable HTTP endpoint（Bearer token 认证）
-registerMcp(app, { config, db, sshManager, approvals });
+// MCP 接入提示词（主 API 提供，地址按 MCP 实际端口动态生成）
+registerMcpPrompt(app, { config, db, sshManager, approvals });
+
+// MCP Streamable HTTP endpoint：配置了 TUNNELADMIN_MCP_PORT 时独立监听该端口
+const mcpDeps = { config, db, sshManager, approvals };
+if (config.mcpPort && config.mcpPort !== config.port) {
+  const mcpApp = Fastify({ logger: { level: process.env.LOG_LEVEL ?? 'info' } });
+  registerMcpEndpoint(mcpApp, mcpDeps);
+  await mcpApp.listen({ port: config.mcpPort, host: config.host });
+} else {
+  registerMcpEndpoint(app, mcpDeps);
+}
 
 // 生产模式：托管 web 构建产物
 const __dirname = path.dirname(fileURLToPath(import.meta.url));

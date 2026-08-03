@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { api, type AuditEntry, type CmdRule, type McpToken } from '../api';
 import { useStore, type OuterTab } from '../store';
 import { THEME_NAMES } from '../themes';
+import { getDesktop } from '../desktop';
 
 /** 外层工具 tab：文件编辑器 / 设置 / 传输管理器 / 审计 */
 
@@ -312,6 +313,9 @@ function McpSettings() {
   const [ruleAction, setRuleAction] = useState<'block' | 'approve'>('block');
   const [ruleNote, setRuleNote] = useState('');
   const [copying, setCopying] = useState(false);
+  const [mcpUrl, setMcpUrl] = useState('');
+  /** 待选择令牌（多个令牌时弹选择行） */
+  const [promptPick, setPromptPick] = useState(false);
 
   const loadRules = useCallback(async (): Promise<void> => {
     try {
@@ -332,6 +336,9 @@ function McpSettings() {
   useEffect(() => {
     void loadRules();
     void loadTokens();
+    void api<{ url: string }>('/api/mcp/info')
+      .then((r) => setMcpUrl(r.url))
+      .catch(() => {});
   }, [loadRules, loadTokens]);
 
   const addRule = async (e: React.FormEvent): Promise<void> => {
@@ -379,20 +386,32 @@ function McpSettings() {
     }
   };
 
-  /** 复制 MCP 接入提示词（给 agent 用） */
-  const copyPrompt = async (): Promise<void> => {
+  /** 复制 MCP 接入提示词（动态地址 + 令牌选择；无令牌先提示创建） */
+  const copyPrompt = async (tokenId?: number): Promise<void> => {
+    const id = tokenId ?? (tokens.length === 1 ? tokens[0].id : undefined);
+    if (id === undefined) {
+      if (tokens.length === 0) {
+        setError('还没有 MCP 令牌，请先在上方创建');
+        return;
+      }
+      setPromptPick(true);
+      return;
+    }
     setCopying(true);
     setError('');
     try {
-      const r = await api<{ prompt: string }>('/api/mcp/prompt');
+      const r = await api<{ prompt: string }>(`/api/mcp/prompt?tokenId=${id}`);
       await navigator.clipboard.writeText(r.prompt);
-      pushToast({ hostName: 'MCP', kind: 'success', text: '接入提示词已复制，可直接粘贴给 agent' });
+      setPromptPick(false);
+      pushToast({ hostName: 'MCP', kind: 'success', text: '接入提示词已复制（含地址与令牌），可直接粘贴给 agent' });
     } catch (err) {
-      setError(`复制失败：${(err as Error).message}`);
+      setError(`生成失败：${(err as Error).message}`);
     } finally {
       setCopying(false);
     }
   };
+
+  const availableTokens = tokens.filter((t) => !t.revoked);
 
   return (
     <div className="flex flex-col gap-4">
@@ -410,12 +429,33 @@ function McpSettings() {
         <div className="text-[11px] leading-relaxed text-[#5a5a5a]">
           一键复制一段说明（endpoint / 鉴权 / 工具清单），粘贴给 AI agent 即可接入本 MCP server
         </div>
+        {mcpUrl && (
+          <div className="mt-1.5 text-[11px] leading-relaxed text-[#5a5a5a]">
+            MCP 地址：<code className="rounded-sm bg-[#1e1e1e] px-1 font-mono text-[10px] text-[#4ec9b0]">{mcpUrl}</code>
+            <span className="ml-1">（端口由服务端 TUNNELADMIN_MCP_PORT 配置）</span>
+          </div>
+        )}
+        {promptPick && availableTokens.length > 1 && (
+          <div className="mt-1.5 flex flex-wrap items-center gap-1">
+            <span className="text-[11px] text-[#858585]">选择用于生成提示词的令牌：</span>
+            {availableTokens.map((t) => (
+              <button
+                key={t.id}
+                onClick={() => void copyPrompt(t.id)}
+                disabled={copying}
+                className="rounded-sm border border-[#3c3c3c] px-2 py-0.5 text-[11px] text-[#cccccc] hover:bg-[#2a2d2e] disabled:opacity-60"
+              >
+                {t.name}
+              </button>
+            ))}
+          </div>
+        )}
       </div>
 
       <div className="border-t border-[#252526] pt-3">
         <div className="mb-2 text-[13px] font-semibold text-[#cccccc]">MCP 令牌</div>
         <div className="mb-2 text-[11px] leading-relaxed text-[#5a5a5a]">
-          Agent 调用 <code className="rounded-sm bg-[#1e1e1e] px-1 font-mono text-[10px] text-[#4ec9b0]">{location.origin}/mcp</code>，携带
+          Agent 调用 <code className="rounded-sm bg-[#1e1e1e] px-1 font-mono text-[10px] text-[#4ec9b0]">{mcpUrl || `${location.origin}/mcp`}</code>，携带
           Bearer Token
         </div>
         <form onSubmit={create} className="mb-2 flex gap-1.5">
@@ -720,6 +760,15 @@ export function TransferTab() {
           <span className="min-w-0 flex-1 truncate text-[#cccccc]">{t.name}</span>
           <span className="shrink-0 text-[10px] text-[#5a5a5a]">{t.hostName}</span>
           <span className="shrink-0 text-[10px] text-[#5a5a5a]">{new Date(t.ts).toLocaleTimeString()}</span>
+          {t.status === 'done' && t.direction === 'down' && t.localPath && (
+            <button
+              title="打开所在文件夹并定位文件"
+              onClick={() => getDesktop()?.showItemInFolder(t.localPath ?? '')}
+              className="shrink-0 rounded-sm border border-[#3c3c3c] px-1.5 py-0.5 text-[10px] text-[#4ec9b0] hover:bg-[#14352e]"
+            >
+              📂 定位
+            </button>
+          )}
           {t.status === 'error' && <span className="shrink-0 text-[#f14c4c]">✗</span>}
         </div>
         {t.status === 'running' && t.size > 0 && (

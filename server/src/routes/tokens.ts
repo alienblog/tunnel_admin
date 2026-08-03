@@ -2,6 +2,7 @@ import type { FastifyInstance } from 'fastify';
 import type Database from 'better-sqlite3';
 import type { Config } from '../config.js';
 import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
+import { encryptText } from '../crypto.js';
 import { requireAuth } from './auth.js';
 
 function hashToken(token: string): string {
@@ -34,7 +35,12 @@ export function registerTokens(app: FastifyInstance, config: Config, db: Databas
     const body = req.body as { name?: string } | null;
     const name = (body?.name ?? '').trim() || 'unnamed';
     const token = `ta_${randomBytes(24).toString('base64url')}`;
-    db.prepare('INSERT INTO mcp_tokens (name, token_hash) VALUES (?, ?)').run(name, hashToken(token));
+    // 明文加密落库（供接入提示词回显；哈希列继续用于鉴权）
+    db.prepare('INSERT INTO mcp_tokens (name, token_hash, token_enc) VALUES (?, ?, ?)').run(
+      name,
+      hashToken(token),
+      encryptText(config.masterKey, token),
+    );
     return { id: Number((db.prepare('SELECT last_insert_rowid() AS id').get() as { id: number }).id), name, token };
   });
 

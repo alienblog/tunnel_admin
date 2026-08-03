@@ -28,6 +28,8 @@ export interface TransferRec {
   transferred: number;
   status: 'running' | 'done' | 'error';
   error?: string;
+  /** 桌面端浏览器下载的本地保存路径（供「定位文件」） */
+  localPath?: string;
   ts: number;
 }
 
@@ -64,6 +66,35 @@ export interface Toast {
   hostName: string;
   kind: 'success' | 'warning' | 'error';
   text: string;
+}
+
+/** 终端视口矩形（像素，相对主机工作区容器） */
+export interface Rect {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+}
+
+/** 布局树 → 每个终端 tab 的视口矩形（group 的 tab 栏占顶部 32px；split 按 ratio 递归切分） */
+export function computeLeafRects(node: LayoutNode | null, bounds: Rect): Map<string, Rect> {
+  const map = new Map<string, Rect>();
+  if (!node) return map;
+  if (node.type === 'group') {
+    const content: Rect = { ...bounds, y: bounds.y + 32, h: Math.max(0, bounds.h - 32) };
+    if (node.activeTabId) map.set(node.activeTabId, content);
+    return map;
+  }
+  const [a, b] = node.children;
+  const aRect: Rect =
+    node.dir === 'h' ? { ...bounds, w: bounds.w * node.ratio } : { ...bounds, h: bounds.h * node.ratio };
+  const bRect: Rect =
+    node.dir === 'h'
+      ? { ...bounds, x: bounds.x + aRect.w, w: bounds.w - aRect.w }
+      : { ...bounds, y: bounds.y + aRect.h, h: bounds.h - aRect.h };
+  for (const [id, r] of computeLeafRects(a, aRect)) map.set(id, r);
+  for (const [id, r] of computeLeafRects(b, bRect)) map.set(id, r);
+  return map;
 }
 
 export interface SftpState {
@@ -296,7 +327,7 @@ interface AppState {
   setActiveOuter: (id: string | null) => void;
   /** 记录传输（自动分配 id，上限 100 条） */
   addTransfer: (t: Omit<TransferRec, 'id' | 'ts'>) => number;
-  updateTransfer: (id: number, patch: Partial<Pick<TransferRec, 'transferred' | 'status' | 'error' | 'size'>>) => void;
+  updateTransfer: (id: number, patch: Partial<Pick<TransferRec, 'transferred' | 'status' | 'error' | 'size' | 'localPath'>>) => void;
   clearTransfers: () => void;
   setQuickCommands: (cmds: Array<{ name: string; value: string }>) => void;
   setSidebarCollapsed: (v: boolean) => void;
