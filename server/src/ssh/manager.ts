@@ -33,9 +33,27 @@ export interface ConnectOptions {
   timeoutMs?: number;
 }
 
-/** 解密 HostRow 中的加密凭据 */
-export function decryptHostCreds(host: HostRow, masterKey: Buffer): HostCreds {
+/** 解密 HostRow 中的加密凭据（含凭据引用：credential_id 指向 credentials 表时以其为准） */
+export function decryptHostCreds(host: HostRow, masterKey: Buffer, db?: Database.Database): HostCreds {
   const creds: HostCreds = {};
+  // 凭据引用：优先使用保存的凭据（username 一并覆盖）
+  if (host.credential_id && db) {
+    const cred = db.prepare('SELECT * FROM credentials WHERE id = ?').get(host.credential_id) as
+      | {
+          username: string;
+          password_enc: string | null;
+          private_key_enc: string | null;
+          passphrase_enc: string | null;
+        }
+      | undefined;
+    if (cred) {
+      if (cred.password_enc) creds.password = decryptText(masterKey, cred.password_enc);
+      if (cred.private_key_enc) creds.privateKey = decryptText(masterKey, cred.private_key_enc);
+      if (cred.passphrase_enc) creds.passphrase = decryptText(masterKey, cred.passphrase_enc);
+      (creds as HostCreds & { username?: string }).username = cred.username;
+    }
+    return creds;
+  }
   if (host.password_enc) creds.password = decryptText(masterKey, host.password_enc);
   if (host.private_key_enc) creds.privateKey = decryptText(masterKey, host.private_key_enc);
   if (host.passphrase_enc) creds.passphrase = decryptText(masterKey, host.passphrase_enc);
@@ -93,7 +111,9 @@ export class SshManager {
    * onLog 用于在连接过程中输出进度日志（Web 端显示）。
    */
   async connect(host: HostRow, opts: ConnectOptions, onLog?: (msg: string) => void): Promise<SshSession> {
-    const creds = decryptHostCreds(host, this.masterKey);
+    const creds = decryptHostCreds(host, this.masterKey, this.db);
+    // 凭据引用时用凭据的 username
+    const username = (creds as HostCreds & { username?: string }).username ?? host.username;
     let sock: Readable | undefined;
     const cleanups: Array<() => void> = [];
 
@@ -104,14 +124,14 @@ export class SshManager {
     }
 
     try {
-      const client = await connectClient(buildConnectConfig(host, creds, sock, opts.timeoutMs ?? 15000), onLog);
+      const client = await connectClient(buildConnectConfig({ ...host, username }, creds, sock, opts.timeoutMs ?? 15000), onLog);
       const session: SshSession = {
         id: crypto.randomUUID(),
         hostId: host.id,
         hostName: host.name,
         host: host.host,
         port: host.port,
-        username: host.username,
+        username,
         source: opts.source,
         client,
         createdAt: Date.now(),
@@ -143,7 +163,7 @@ export class SshManager {
   ): Promise<Readable> {
     const jump = this.getHostRow(jumpHostId);
     if (!jump) throw new Error(`跳板机配置不存在（id=${jumpHostId}）`);
-    const creds = decryptHostCreds(jump, this.masterKey);
+    const creds = decryptHostCreds(jump, this.masterKey, this.db);
     onLog?.(`→ 跳板机 ${jump.name}（${jump.host}:${jump.port}）…`);
 
     let upstream: Readable | undefined;
@@ -151,7 +171,8 @@ export class SshManager {
       upstream = await this.buildJumpPath(jump.jump_host_id, jump.host, jump.port, cleanups, onLog);
     }
 
-    const client = await connectClient(buildConnectConfig(jump, creds, upstream, 15000), onLog);
+    const jumpUsername = (creds as HostCreds & { username?: string }).username ?? jump.username;
+    const client = await connectClient(buildConnectConfig({ ...jump, username: jumpUsername }, creds, upstream, 15000), onLog);
     cleanups.push(() => client.end());
     onLog?.(`→ 跳板机隧道已建立（${targetHost}:${targetPort}）`);
 

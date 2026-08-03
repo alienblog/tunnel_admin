@@ -27,10 +27,23 @@ export interface Host {
   has_password: boolean;
   has_private_key: boolean;
   jump_host_id: number | null;
+  /** 引用的凭据 id（null = 内联凭据） */
+  credential_id: number | null;
   group: string;
   tags: string;
   note: string;
   trusted: boolean;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface Credential {
+  id: number;
+  name: string;
+  username: string;
+  auth_type: 'password' | 'private_key';
+  has_password: boolean;
+  has_private_key: boolean;
   created_at: string;
   updated_at: string;
 }

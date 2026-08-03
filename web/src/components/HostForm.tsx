@@ -1,5 +1,5 @@
-import { useState } from 'react';
-import { api, type Host } from '../api';
+import { useEffect, useState } from 'react';
+import { api, type Credential, type Host } from '../api';
 import { useStore } from '../store';
 
 interface FormState {
@@ -12,6 +12,8 @@ interface FormState {
   private_key: string;
   passphrase: string;
   jump_host_id: string;
+  /** 引用的凭据 id（'' = 内联凭据） */
+  credential_id: string;
   group: string;
   tags: string;
   note: string;
@@ -28,6 +30,7 @@ const EMPTY: FormState = {
   private_key: '',
   passphrase: '',
   jump_host_id: '',
+  credential_id: '',
   group: '',
   tags: '',
   note: '',
@@ -35,17 +38,29 @@ const EMPTY: FormState = {
 };
 
 function toForm(h: Host): FormState {
-  return { ...EMPTY, name: h.name, host: h.host, port: String(h.port), username: h.username, auth_type: h.auth_type, jump_host_id: h.jump_host_id ? String(h.jump_host_id) : '', group: h.group, tags: h.tags, note: h.note, trusted: h.trusted };
+  return { ...EMPTY, name: h.name, host: h.host, port: String(h.port), username: h.username, auth_type: h.auth_type, jump_host_id: h.jump_host_id ? String(h.jump_host_id) : '', credential_id: h.credential_id ? String(h.credential_id) : '', group: h.group, tags: h.tags, note: h.note, trusted: h.trusted };
 }
 
 export default function HostForm({ initial, onDone }: { initial: Host | null; onDone: () => void }) {
   const [f, setF] = useState<FormState>(initial ? toForm(initial) : EMPTY);
   const [error, setError] = useState('');
+  const [credentials, setCredentials] = useState<Credential[]>([]);
   const hosts = useStore((s) => s.hosts);
   const loadHosts = useStore((s) => s.loadHosts);
   const editing = initial !== null;
 
+  useEffect(() => {
+    void api<Credential[]>('/api/credentials')
+      .then((list) => setCredentials(list))
+      .catch(() => {});
+  }, []);
+
   const set = (patch: Partial<FormState>): void => setF((x) => ({ ...x, ...patch }));
+
+  // 已有分组（自由输入 + 下拉选择）
+  const groups = [...new Set(hosts.map((h) => h.group).filter((g) => g !== ''))].sort();
+  const credId = f.credential_id ? Number(f.credential_id) : null;
+  const usingCred = credentials.find((c) => c.id === credId) ?? null;
 
   const submit = async (e: React.FormEvent): Promise<void> => {
     e.preventDefault();
@@ -57,17 +72,21 @@ export default function HostForm({ initial, onDone }: { initial: Host | null; on
       username: f.username,
       auth_type: f.auth_type,
       jump_host_id: f.jump_host_id ? Number(f.jump_host_id) : null,
+      credential_id: f.credential_id ? Number(f.credential_id) : null,
       group: f.group,
       tags: f.tags,
       note: f.note,
       trusted: f.trusted,
     };
-    // 编辑时密码/私钥留空 = 保持不变
-    if (f.auth_type === 'password') {
-      if (f.password !== '') body.password = f.password;
-    } else {
-      if (f.private_key !== '') body.private_key = f.private_key;
-      body.passphrase = f.passphrase !== '' ? f.passphrase : undefined;
+    // 引用凭据时不再发送内联凭据字段（连接时以凭据为准）
+    if (!f.credential_id) {
+      // 编辑时密码/私钥留空 = 保持不变
+      if (f.auth_type === 'password') {
+        if (f.password !== '') body.password = f.password;
+      } else {
+        if (f.private_key !== '') body.private_key = f.private_key;
+        body.passphrase = f.passphrase !== '' ? f.passphrase : undefined;
+      }
     }
     try {
       if (editing) await api(`/api/hosts/${initial.id}`, { method: 'PUT', body: JSON.stringify(body) });
@@ -90,7 +109,34 @@ export default function HostForm({ initial, onDone }: { initial: Host | null; on
       </div>
       <div>
         <label className={labelCls}>分组</label>
-        <input className={inputCls} value={f.group} onChange={(e) => set({ group: e.target.value })} placeholder="可选" />
+        <input className={inputCls} list="ta-host-groups" value={f.group} onChange={(e) => set({ group: e.target.value })} placeholder="可选（自由输入或下拉选择）" />
+        <datalist id="ta-host-groups">
+          {groups.map((g) => (
+            <option key={g} value={g} />
+          ))}
+        </datalist>
+      </div>
+      <div>
+        <label className={labelCls}>使用凭据（可选）</label>
+        <select
+          className={inputCls}
+          value={f.credential_id}
+          onChange={(e) => {
+            const cred = credentials.find((c) => String(c.id) === e.target.value);
+            // 选择凭据时同步用户名（可再改），认证方式按凭据
+            set({
+              credential_id: e.target.value,
+              ...(cred ? { username: cred.username, auth_type: cred.auth_type } : {}),
+            });
+          }}
+        >
+          <option value="">不引用（内联凭据）</option>
+          {credentials.map((c) => (
+            <option key={c.id} value={c.id}>
+              {c.name}（{c.username}）
+            </option>
+          ))}
+        </select>
       </div>
       <div>
         <label className={labelCls}>主机地址</label>
@@ -111,7 +157,11 @@ export default function HostForm({ initial, onDone }: { initial: Host | null; on
           <option value="private_key">私钥</option>
         </select>
       </div>
-      {f.auth_type === 'password' ? (
+      {f.credential_id ? (
+        <div className="col-span-2 rounded-sm border border-[#3c3c3c] bg-[#1e1e1e] px-3 py-2 text-xs text-[#858585]">
+          {usingCred ? `将使用凭据「${usingCred.name}」认证（${usingCred.username}，${usingCred.auth_type === 'password' ? '密码' : '私钥'}）；下方可继续填写内联凭据备用` : '所选凭据不存在，请重新选择'}
+        </div>
+      ) : f.auth_type === 'password' ? (
         <div className="col-span-2">
           <label className={labelCls}>{editing ? '密码（留空保持不变）' : '密码'}</label>
           <input className={inputCls} type="password" value={f.password} onChange={(e) => set({ password: e.target.value })} required={!editing} autoComplete="new-password" />

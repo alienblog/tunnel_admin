@@ -308,6 +308,8 @@ interface AppState {
   sidebarCollapsed: boolean;
   /** 侧边栏宽度（拖拽调整，localStorage 持久） */
   sidebarWidth: number;
+  /** 右栏宽度（拖拽调整，localStorage 持久） */
+  rightbarWidth: number;
   /** 当前活动主机的系统指标（状态栏） */
   metrics: HostMetrics | null;
   /** 告警阈值（百分比） */
@@ -368,6 +370,7 @@ interface AppState {
   setQuickCommands: (cmds: Array<{ name: string; value: string }>) => void;
   setSidebarCollapsed: (v: boolean) => void;
   setSidebarWidth: (w: number) => void;
+  setRightbarWidth: (w: number) => void;
   /** 编辑器保存后失效 SFTP 缓存（hostId + 父目录路径） */
   invalidateSftpPath: (hostId: string, path: string) => void;
   /** 打开主机工作区（外层激活），新建终端（若已有工作区则加入第一个组） */
@@ -469,6 +472,15 @@ export const useStore = create<AppState>((set, get) => ({
   sidebarWidth: (() => {
     try {
       const v = Number(localStorage.getItem('ta-sidebar-width'));
+      if (v >= 200 && v <= 800) return v;
+    } catch {
+      // 忽略
+    }
+    return 320;
+  })(),
+  rightbarWidth: (() => {
+    try {
+      const v = Number(localStorage.getItem('ta-rightbar-width'));
       if (v >= 200 && v <= 800) return v;
     } catch {
       // 忽略
@@ -628,6 +640,16 @@ export const useStore = create<AppState>((set, get) => ({
     set({ sidebarWidth: width });
     try {
       localStorage.setItem('ta-sidebar-width', String(width));
+    } catch {
+      // 忽略
+    }
+  },
+
+  setRightbarWidth: (w) => {
+    const width = Math.min(800, Math.max(200, Math.round(w)));
+    set({ rightbarWidth: width });
+    try {
+      localStorage.setItem('ta-rightbar-width', String(width));
     } catch {
       // 忽略
     }
@@ -917,9 +939,9 @@ export const useStore = create<AppState>((set, get) => ({
         toolOuterTabs?: OuterTab[];
         rightDockId?: string | null;
       };
-      if (!saved?.tabs?.length || !saved.hostLayouts) return;
+      if (!saved?.hostLayouts) return;
       // 布局中引用已不存在 tab 的 leaf 清理掉
-      const ids = new Set(saved.tabs.map((t) => t.id));
+      const ids = new Set((saved.tabs ?? []).map((t) => t.id));
       const hostLayouts: Record<string, LayoutNode> = {};
       for (const [hostId, layout] of Object.entries(saved.hostLayouts)) {
         let cleaned: LayoutNode | null = layout;

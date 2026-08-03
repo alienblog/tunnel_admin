@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { api, type AuditEntry, type CmdRule, type McpToken } from '../api';
+import { api, type AuditEntry, type CmdRule, type Credential, type McpToken } from '../api';
 import { useStore, type OuterTab } from '../store';
 import { THEME_NAMES } from '../themes';
 import { getDesktop } from '../desktop';
@@ -632,6 +632,143 @@ function McpSettings() {
   );
 }
 
+/** 凭据管理：单独保存用户名/密码/私钥，设置主机时可下拉引用 */
+function CredentialsSettings() {
+  const [list, setList] = useState<Credential[]>([]);
+  const [error, setError] = useState('');
+  const [editing, setEditing] = useState<Credential | null>(null);
+  const [name, setName] = useState('');
+  const [username, setUsername] = useState('');
+  const [authType, setAuthType] = useState<'password' | 'private_key'>('password');
+  const [password, setPassword] = useState('');
+  const [privateKey, setPrivateKey] = useState('');
+  const [passphrase, setPassphrase] = useState('');
+
+  const load = useCallback(async (): Promise<void> => {
+    try {
+      setList(await api<Credential[]>('/api/credentials'));
+    } catch (err) {
+      setError((err as Error).message);
+    }
+  }, []);
+
+  useEffect(() => {
+    void load();
+  }, [load]);
+
+  const reset = (): void => {
+    setEditing(null);
+    setName('');
+    setUsername('');
+    setAuthType('password');
+    setPassword('');
+    setPrivateKey('');
+    setPassphrase('');
+    setError('');
+  };
+
+  const submit = async (e: React.FormEvent): Promise<void> => {
+    e.preventDefault();
+    setError('');
+    const body: Record<string, unknown> = { name: name.trim(), username: username.trim(), auth_type: authType };
+    if (authType === 'password') {
+      if (password !== '') body.password = password;
+    } else {
+      if (privateKey !== '') body.private_key = privateKey;
+      body.passphrase = passphrase !== '' ? passphrase : undefined;
+    }
+    try {
+      if (editing) await api(`/api/credentials/${editing.id}`, { method: 'PUT', body: JSON.stringify(body) });
+      else await api('/api/credentials', { method: 'POST', body: JSON.stringify(body) });
+      reset();
+      await load();
+    } catch (err) {
+      setError((err as Error).message);
+    }
+  };
+
+  const remove = async (c: Credential): Promise<void> => {
+    if (!confirm(`确认删除凭据「${c.name}」？引用它的主机将回退为内联凭据`)) return;
+    try {
+      await api(`/api/credentials/${c.id}`, { method: 'DELETE' });
+      await load();
+    } catch (err) {
+      setError((err as Error).message);
+    }
+  };
+
+  return (
+    <div className="flex flex-col gap-3">
+      <div className="text-[11px] leading-relaxed text-[#5a5a5a]">
+        保存常用服务器凭据（用户名/密码/私钥），设置主机时可直接下拉引用；凭据更新对所有引用它的主机生效
+      </div>
+      {/* 新建/编辑表单 */}
+      <form onSubmit={submit} className="flex flex-col gap-2 rounded-sm border border-[#252526] bg-[#252526] p-3">
+        <div className="flex gap-1.5">
+          <input value={name} onChange={(e) => setName(e.target.value)} placeholder="凭据名称，如 服务器root" className={`${inputCls} w-40 shrink-0`} />
+          <input value={username} onChange={(e) => setUsername(e.target.value)} placeholder="用户名" className={`${inputCls} w-32 shrink-0`} />
+          <select value={authType} onChange={(e) => setAuthType(e.target.value as 'password' | 'private_key')} className={`${inputCls} w-20 shrink-0`}>
+            <option value="password">密码</option>
+            <option value="private_key">私钥</option>
+          </select>
+          <button type="submit" className="shrink-0 rounded-sm bg-[#0e639c] px-3 py-1 text-[12px] font-medium text-white hover:bg-[#1177bb]">
+            {editing ? '保存修改' : '＋ 新建'}
+          </button>
+          {editing && (
+            <button type="button" onClick={reset} className="shrink-0 rounded-sm border border-[#3c3c3c] px-2 py-1 text-[11px] text-[#858585] hover:bg-[#3a3d41]">
+              取消编辑
+            </button>
+          )}
+        </div>
+        {authType === 'password' ? (
+          <input value={password} onChange={(e) => setPassword(e.target.value)} type="password" placeholder={editing ? '密码（留空保持不变）' : '密码'} className={`${inputCls} max-w-sm font-mono`} />
+        ) : (
+          <>
+            <textarea value={privateKey} onChange={(e) => setPrivateKey(e.target.value)} placeholder={editing ? '私钥（留空保持不变）' : '私钥'} className={`${inputCls} h-20 max-w-lg font-mono text-xs`} />
+            <input value={passphrase} onChange={(e) => setPassphrase(e.target.value)} type="password" placeholder="私钥口令（可选）" className={`${inputCls} max-w-sm`} />
+          </>
+        )}
+        {error && <div className="text-[11px] text-[#f14c4c]">{error}</div>}
+      </form>
+      {/* 列表 */}
+      <div className="flex flex-col gap-1">
+        {list.map((c) => (
+          <div key={c.id} className="group flex items-center gap-1.5 rounded-sm px-2 py-[3px] text-[12px] hover:bg-[#2a2d2e]">
+            <span className="text-[#cca700]">🔑</span>
+            <span className="truncate text-[#cccccc]">{c.name}</span>
+            <span className="shrink-0 text-[#5a5a5a]">{c.username} · {c.auth_type === 'password' ? '密码' : '私钥'}</span>
+            <span className="ml-auto hidden shrink-0 text-[10px] text-[#5a5a5a] group-hover:inline">更新于 {c.updated_at}</span>
+            <button
+              title="编辑"
+              onClick={() => {
+                setEditing(c);
+                setName(c.name);
+                setUsername(c.username);
+                setAuthType(c.auth_type);
+                setPassword('');
+                setPrivateKey('');
+                setPassphrase('');
+                setError('');
+              }}
+              className="hidden shrink-0 rounded px-1 text-[#858585] hover:bg-[#3a3d41] hover:text-white group-hover:block"
+            >
+              ✎
+            </button>
+            <button
+              title="删除"
+              onClick={() => void remove(c)}
+              className="hidden shrink-0 rounded px-1 text-[#858585] hover:bg-[#f14c4c]/20 hover:text-[#f14c4c] group-hover:block"
+            >
+              ×
+            </button>
+          </div>
+        ))}
+        {list.length === 0 && <div className="text-[11px] text-[#5a5a5a]">暂无凭据</div>}
+      </div>
+    </div>
+  );
+}
+
 /** 修改 Web 登录密码 */
 function PasswordSettings() {
   const pushToast = useStore((s) => s.pushToast);
@@ -737,7 +874,7 @@ function PasswordSettings() {
 
 /** 设置页：左侧分类导航 + 右侧内容 */
 export function SettingsTab() {
-  const [section, setSection] = useState<'terminal' | 'monitor' | 'mcp' | 'quick' | 'password'>('terminal');
+  const [section, setSection] = useState<'terminal' | 'monitor' | 'mcp' | 'quick' | 'password' | 'credentials'>('terminal');
   const themeName = useStore((s) => s.terminalTheme);
   const setTerminalTheme = useStore((s) => s.setTerminalTheme);
 
@@ -745,6 +882,7 @@ export function SettingsTab() {
     { key: 'terminal', label: '终端', icon: '⌨️' },
     { key: 'monitor', label: '监控', icon: '📈' },
     { key: 'mcp', label: 'MCP', icon: '🤖' },
+    { key: 'credentials', label: '凭据', icon: '🔑' },
     { key: 'quick', label: '快捷命令', icon: '⚡' },
     { key: 'password', label: '密码', icon: '🔒' },
   ];
@@ -795,6 +933,7 @@ export function SettingsTab() {
           </div>
         )}
         {section === 'mcp' && <McpSettings />}
+        {section === 'credentials' && <CredentialsSettings />}
         {section === 'quick' && (
           <div className="flex flex-col gap-2">
             <div className="mb-1 text-[13px] font-semibold text-[#cccccc]">快捷命令</div>

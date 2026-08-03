@@ -255,12 +255,15 @@ export default function Terminals() {
   const outerTabs = useStore((s) => s.outerTabs);
   const rightDockId = useStore((s) => s.rightDockId);
   const rightDockCollapsed = useStore((s) => s.rightDockCollapsed);
+  const rightbarWidth = useStore((s) => s.rightbarWidth);
+  const setRightbarWidth = useStore((s) => s.setRightbarWidth);
   const toggleRightDock = useStore((s) => s.toggleRightDock);
   const setRightDock = useStore((s) => s.setRightDock);
   const closeOuterTab = useStore((s) => s.closeOuterTab);
   const openOuterTab = useStore((s) => s.openOuterTab);
   const setOuterDragId = useStore((s) => s.setOuterDragId);
   const hosts = useStore((s) => s.hosts);
+  const rightDragRef = useRef<{ startX: number; startWidth: number } | null>(null);
   const rightTab = outerTabs.find((t) => t.id === rightDockId) ?? null;
   const rightLabel = rightTab
     ? rightTab.kind === 'host'
@@ -268,15 +271,45 @@ export default function Terminals() {
       : outerLabel(rightTab)
     : '';
 
+  /** 右栏拖动手柄：改变宽度（200–800px，与左侧一致） */
+  const onRightDragStart = (e: React.PointerEvent): void => {
+    e.preventDefault();
+    rightDragRef.current = { startX: e.clientX, startWidth: rightbarWidth };
+    const move = (ev: PointerEvent): void => {
+      const d = rightDragRef.current;
+      if (!d) return;
+      // 向左拖（clientX 减小）→ 变宽
+      setRightbarWidth(d.startWidth + (d.startX - ev.clientX));
+    };
+    const up = (): void => {
+      rightDragRef.current = null;
+      window.removeEventListener('pointermove', move);
+      window.removeEventListener('pointerup', up);
+    };
+    window.addEventListener('pointermove', move);
+    window.addEventListener('pointerup', up);
+  };
+
   return (
     <div className="flex h-full min-h-0">
       {/* 主区：第一层布局（tab 栏按组渲染，可拖拽分屏/合并/停靠右栏） */}
       <div className="flex min-w-0 flex-1 flex-col">
         <OuterWorkspace />
       </div>
-      {/* 固定右栏（拖外层 tab 到主区右缘停靠；可展开/折叠/移回主区/关闭） */}
+      {/* 固定右栏（拖外层 tab 到主区右缘停靠；可展开/折叠/移回主区/关闭；左缘手柄可调宽） */}
       {rightTab && (
-        <div className={`flex shrink-0 flex-col border-l border-[#1e1e1e] bg-[#252526] ${rightDockCollapsed ? 'w-9' : 'w-80'}`}>
+        <div
+          className={`relative flex shrink-0 flex-col border-l-2 border-[#2a2d2e] bg-[#252526] ${rightDockCollapsed ? 'w-9' : ''}`}
+          style={!rightDockCollapsed ? { width: rightbarWidth } : undefined}
+        >
+          {/* 宽度拖动手柄（左缘） */}
+          {!rightDockCollapsed && (
+            <div
+              title="拖动调整右栏宽度"
+              onPointerDown={onRightDragStart}
+              className="absolute top-0 bottom-0 left-0 z-30 w-1.5 cursor-col-resize bg-[#2a2d2e] hover:bg-[#007acc]/70"
+            />
+          )}
           <div
             draggable
             onDragStart={(e) => {
@@ -285,7 +318,7 @@ export default function Terminals() {
             }}
             onDragEnd={() => setOuterDragId(null)}
             title="拖动到主区可移回布局"
-            className="flex h-8 shrink-0 cursor-grab items-center gap-1 border-b border-[#1e1e1e] px-1 active:cursor-grabbing"
+            className="flex h-8 shrink-0 cursor-grab items-center gap-1 border-b border-[#1e1e1e] pl-2 pr-1 active:cursor-grabbing"
           >
             <button
               title={rightDockCollapsed ? '展开右栏' : '折叠右栏'}

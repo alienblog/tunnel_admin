@@ -22,11 +22,12 @@ function groupHosts(hosts: Host[]): Array<{ group: string; hosts: Host[] }> {
 
 const sectionCls = 'px-3 pt-3 pb-1 text-[11px] font-semibold tracking-wide text-[#858585]';
 
-function HostRow({ host, onActivate, onEdit }: { host: Host; onActivate: () => void; onEdit: () => void }) {
+function HostRow({ host, onActivate, onEdit, onContextMenu }: { host: Host; onActivate: () => void; onEdit: () => void; onContextMenu: (e: React.MouseEvent, h: Host) => void }) {
   return (
     <div
       className="group flex cursor-pointer items-center gap-1.5 rounded-sm px-2 py-[3px] text-[13px] text-[#cccccc] hover:bg-[#2a2d2e]"
       onDoubleClick={onActivate}
+      onContextMenu={(e) => onContextMenu(e, host)}
       title={`${host.username}@${host.host}:${host.port}（双击打开终端）`}
     >
       <svg viewBox="0 0 16 16" className="h-3.5 w-3.5 shrink-0 text-[#858585]" fill="currentColor">
@@ -51,7 +52,7 @@ function HostRow({ host, onActivate, onEdit }: { host: Host; onActivate: () => v
 }
 
 /** 主机树（终端视图）：点击开终端 */
-function HostTree({ onEdit }: { onEdit: (h: Host) => void }) {
+function HostTree({ onEdit, onContextMenu }: { onEdit: (h: Host) => void; onContextMenu: (e: React.MouseEvent, h: Host) => void }) {
   const hosts = useStore((s) => s.hosts);
   const addTab = useStore((s) => s.addTab);
   const grouped = useMemo(() => groupHosts(hosts), [hosts]);
@@ -67,7 +68,7 @@ function HostTree({ onEdit }: { onEdit: (h: Host) => void }) {
             <span className="ml-auto pr-1 text-[10px] text-[#5a5a5a]">{g.hosts.length}</span>
           </div>
           {g.hosts.map((h) => (
-            <HostRow key={h.id} host={h} onActivate={() => addTab(h)} onEdit={() => onEdit(h)} />
+            <HostRow key={h.id} host={h} onActivate={() => addTab(h)} onEdit={() => onEdit(h)} onContextMenu={onContextMenu} />
           ))}
         </div>
       ))}
@@ -76,7 +77,7 @@ function HostTree({ onEdit }: { onEdit: (h: Host) => void }) {
   );
 }
 
-function SessionSideBar() {
+function SessionSideBar({ onHostContextMenu }: { onHostContextMenu: (e: React.MouseEvent, h: Host) => void }) {
   const tabs = useStore((s) => s.tabs);
   const mcpSessions = useStore((s) => s.mcpSessions);
   const hosts = useStore((s) => s.hosts);
@@ -147,7 +148,7 @@ function SessionSideBar() {
       {section('主机', '🖧', openHosts, () => setOpenHosts(!openHosts))}
       {openHosts && (
         <div className="min-h-0 flex-1 overflow-y-auto pb-2">
-          <HostTree onEdit={openHostModal} />
+          <HostTree onEdit={openHostModal} onContextMenu={onHostContextMenu} />
         </div>
       )}
 
@@ -166,7 +167,7 @@ function SessionSideBar() {
   );
 }
 
-function HostsSideBar() {
+function HostsSideBar({ onContextMenu }: { onContextMenu: (e: React.MouseEvent, h: Host) => void }) {
   const hosts = useStore((s) => s.hosts);
   const loadHosts = useStore((s) => s.loadHosts);
   const hostModal = useStore((s) => s.hostModal);
@@ -215,7 +216,11 @@ function HostsSideBar() {
               {g.group}
             </div>
             {g.hosts.map((h) => (
-              <div key={h.id} className="group flex items-center gap-1.5 rounded-sm px-2 py-[3px] text-[13px] text-[#cccccc] hover:bg-[#2a2d2e]">
+              <div
+                key={h.id}
+                className="group flex cursor-context-menu items-center gap-1.5 rounded-sm px-2 py-[3px] text-[13px] text-[#cccccc] hover:bg-[#2a2d2e]"
+                onContextMenu={(e) => onContextMenu(e, h)}
+              >
                 <span className="truncate">{h.name}</span>
                 {h.trusted && <span className="text-[10px] text-[#4ec9b0]">●</span>}
                 <span className="ml-auto hidden shrink-0 gap-1 group-hover:flex">
@@ -1156,7 +1161,42 @@ function ForwardSideBar() {
 export default function SideBar({ view }: { view: View }) {
   const sidebarWidth = useStore((s) => s.sidebarWidth);
   const setSidebarWidth = useStore((s) => s.setSidebarWidth);
+  const loadHosts = useStore((s) => s.loadHosts);
+  const pushToast = useStore((s) => s.pushToast);
+  const openHostModal = useStore((s) => s.openHostModal);
   const dragRef = useRef<{ startX: number; startWidth: number } | null>(null);
+  // 主机右键菜单
+  const [ctxMenu, setCtxMenu] = useState<{ host: Host; x: number; y: number } | null>(null);
+  const ctxRef = useRef<{ host: Host; x: number; y: number } | null>(null);
+
+  /** 右键菜单：编辑 / 克隆 / 删除 */
+  const openCtx = (e: React.MouseEvent, h: Host): void => {
+    e.preventDefault();
+    ctxRef.current = { host: h, x: e.clientX, y: e.clientY };
+    setCtxMenu(ctxRef.current);
+  };
+
+  const cloneHost = async (h: Host): Promise<void> => {
+    try {
+      await api(`/api/hosts/${h.id}/clone`, { method: 'POST' });
+      await loadHosts();
+      pushToast({ hostName: h.name, kind: 'success', text: '主机已克隆' });
+    } catch (err) {
+      pushToast({ hostName: h.name, kind: 'error', text: `克隆失败：${(err as Error).message}` });
+    }
+    setCtxMenu(null);
+  };
+
+  const removeHost = async (h: Host): Promise<void> => {
+    if (!confirm(`确认删除主机「${h.name}」？`)) return;
+    try {
+      await api(`/api/hosts/${h.id}`, { method: 'DELETE' });
+      await loadHosts();
+    } catch (err) {
+      alert((err as Error).message);
+    }
+    setCtxMenu(null);
+  };
 
   /** 拖拽手柄：改变侧边栏宽度（200–800px） */
   const onPointerDown = (e: React.PointerEvent): void => {
@@ -1181,8 +1221,8 @@ export default function SideBar({ view }: { view: View }) {
       className="relative flex shrink-0 flex-col overflow-hidden border-r border-[#1e1e1e] bg-[#252526]"
       style={{ width: sidebarWidth }}
     >
-      {view === 'terminals' && <SessionSideBar />}
-      {view === 'hosts' && <HostsSideBar />}
+      {view === 'terminals' && <SessionSideBar onHostContextMenu={openCtx} />}
+      {view === 'hosts' && <HostsSideBar onContextMenu={openCtx} />}
       {view === 'sftp' && <SftpSideBar />}
       {view === 'forward' && <ForwardSideBar />}
       {/* 拖拽手柄：调整侧边栏宽度 */}
@@ -1191,6 +1231,49 @@ export default function SideBar({ view }: { view: View }) {
         onPointerDown={onPointerDown}
         className="absolute top-0 right-0 bottom-0 z-20 w-1 cursor-col-resize bg-transparent transition-colors hover:bg-[#007acc]/60"
       />
+      {/* 主机右键菜单（编辑 / 克隆 / 删除） */}
+      {ctxMenu && (
+        <div
+          className="fixed z-50 min-w-32 rounded-sm border border-[#3c3c3c] bg-[#252526] py-1 shadow-2xl"
+          style={{ left: Math.min(ctxMenu.x, window.innerWidth - 160), top: Math.min(ctxMenu.y, window.innerHeight - 130) }}
+          onMouseDown={(e) => e.stopPropagation()}
+          onContextMenu={(e) => e.preventDefault()}
+        >
+          <div className="border-b border-[#1e1e1e] px-3 py-1 text-[11px] text-[#5a5a5a]">{ctxMenu.host.name}</div>
+          <button
+            onClick={() => {
+              setCtxMenu(null);
+              openHostModal(ctxMenu.host);
+            }}
+            className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-[12px] text-[#cccccc] hover:bg-[#094771]"
+          >
+            ✎ 编辑
+          </button>
+          <button
+            onClick={() => void cloneHost(ctxMenu.host)}
+            className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-[12px] text-[#cccccc] hover:bg-[#094771]"
+          >
+            ⧉ 克隆主机
+          </button>
+          <button
+            onClick={() => void removeHost(ctxMenu.host)}
+            className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-[12px] text-[#f14c4c] hover:bg-[#3b1d1d]"
+          >
+            🗑 删除
+          </button>
+        </div>
+      )}
+      {/* 点击其他区域关闭右键菜单 */}
+      {ctxMenu && (
+        <div
+          className="fixed inset-0 z-40"
+          onMouseDown={(e) => {
+            if (ctxRef.current && !(e.target as HTMLElement).closest('.z-50')) {
+              setCtxMenu(null);
+            }
+          }}
+        />
+      )}
     </aside>
   );
 }

@@ -13,6 +13,7 @@ export interface HostRow {
   private_key_enc: string | null;
   passphrase_enc: string | null;
   jump_host_id: number | null;
+  credential_id: number | null;
   group: string;
   tags: string;
   note: string;
@@ -33,6 +34,7 @@ CREATE TABLE IF NOT EXISTS hosts (
   private_key_enc TEXT,
   passphrase_enc TEXT,
   jump_host_id INTEGER REFERENCES hosts(id),
+  credential_id INTEGER REFERENCES credentials(id),
   "group" TEXT NOT NULL DEFAULT '',
   tags TEXT NOT NULL DEFAULT '',
   note TEXT NOT NULL DEFAULT '',
@@ -58,6 +60,18 @@ CREATE TABLE IF NOT EXISTS audit_log (
   command TEXT NOT NULL DEFAULT '',
   exit_code INTEGER,
   duration_ms INTEGER
+);
+
+CREATE TABLE IF NOT EXISTS credentials (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  name TEXT NOT NULL,
+  username TEXT NOT NULL,
+  auth_type TEXT NOT NULL CHECK (auth_type IN ('password','private_key')),
+  password_enc TEXT,
+  private_key_enc TEXT,
+  passphrase_enc TEXT,
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
 CREATE TABLE IF NOT EXISTS mcp_tokens (
@@ -107,6 +121,12 @@ export function openDb(dataDir: string): Database.Database {
   // 迁移：mcp_tokens 补充 token_enc 列（AES 加密的明文令牌，供接入提示词回显；旧令牌为空）
   try {
     db.exec('ALTER TABLE mcp_tokens ADD COLUMN token_enc TEXT');
+  } catch {
+    // 列已存在
+  }
+  // 迁移：hosts 补充 credential_id 列（凭据引用，可空 = 使用内联凭据）
+  try {
+    db.exec('ALTER TABLE hosts ADD COLUMN credential_id INTEGER REFERENCES credentials(id)');
   } catch {
     // 列已存在
   }
