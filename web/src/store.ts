@@ -97,6 +97,26 @@ export function computeLeafRects(node: LayoutNode | null, bounds: Rect): Map<str
   return map;
 }
 
+/** 布局树 → 每个 group 面板的拖拽停靠区域矩形（内容区，tab 栏占顶部 32px） */
+export function computeGroupRects(node: LayoutNode | null, bounds: Rect): Map<string, Rect> {
+  const map = new Map<string, Rect>();
+  if (!node) return map;
+  if (node.type === 'group') {
+    map.set(node.id, { ...bounds, y: bounds.y + 32, h: Math.max(0, bounds.h - 32) });
+    return map;
+  }
+  const [a, b] = node.children;
+  const aRect: Rect =
+    node.dir === 'h' ? { ...bounds, w: bounds.w * node.ratio } : { ...bounds, h: bounds.h * node.ratio };
+  const bRect: Rect =
+    node.dir === 'h'
+      ? { ...bounds, x: bounds.x + aRect.w, w: bounds.w - aRect.w }
+      : { ...bounds, y: bounds.y + aRect.h, h: bounds.h - aRect.h };
+  for (const [id, r] of computeGroupRects(a, aRect)) map.set(id, r);
+  for (const [id, r] of computeGroupRects(b, bRect)) map.set(id, r);
+  return map;
+}
+
 export interface SftpState {
   /** 上次使用的 SFTP 主机（跨挂载记忆，避免重挂时误判主机切换） */
   hostId: string;

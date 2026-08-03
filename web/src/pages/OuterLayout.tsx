@@ -1,12 +1,13 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   useStore,
+  computeGroupRects,
   computeLeafRects,
-  type DropPos,
   type LayoutNode,
   type OuterTab,
   type Rect,
 } from '../store';
+import DropOverlay from '../components/DropOverlay';
 import { HostWorkspace } from './Terminals';
 import { AuditTab, EditorTab, SettingsTab, TransferTab } from './tabs';
 
@@ -72,46 +73,14 @@ export function OuterTabIcon({ tab }: { tab: OuterTab }) {
   );
 }
 
-const dropIndicator: Record<DropPos, string> = {
-  left: 'left-0 top-0 bottom-0 w-1/4',
-  right: 'right-0 top-0 bottom-0 w-1/4',
-  top: 'top-0 left-0 right-0 h-1/4',
-  bottom: 'bottom-0 left-0 right-0 h-1/4',
-  center: 'inset-0',
-};
-
-/** 外层 group 面板：tab 栏 + 拖拽停靠目标（内容由池按矩形渲染） */
+/** 外层 group 面板：tab 栏（内容由池按矩形渲染；拖拽停靠由 DropOverlay 处理） */
 function OuterGroupPanel({ node }: { node: Extract<LayoutNode, { type: 'group' }> }) {
   const outerTabs = useStore((s) => s.outerTabs);
   const hosts = useStore((s) => s.hosts);
   const setActiveOuter = useStore((s) => s.setActiveOuter);
   const closeOuterTab = useStore((s) => s.closeOuterTab);
-  const moveOuterTab = useStore((s) => s.moveOuterTab);
   const setOuterDragId = useStore((s) => s.setOuterDragId);
-  const [dropPos, setDropPos] = useState<DropPos | null>(null);
-  const dropPosRef = useRef<DropPos | null>(null);
   const activeId = node.activeTabId ?? node.tabIds[0] ?? null;
-
-  const onDragOver = (e: React.DragEvent): void => {
-    if (!useStore.getState().outerDragId) return;
-    e.preventDefault();
-    e.dataTransfer.dropEffect = 'move';
-    const rect = e.currentTarget.getBoundingClientRect();
-    const x = (e.clientX - rect.left) / rect.width;
-    const y = (e.clientY - rect.top) / rect.height;
-    const pos: DropPos =
-      x < 0.25 ? 'left' : x > 0.75 ? 'right' : y < 0.25 ? 'top' : y > 0.75 ? 'bottom' : 'center';
-    dropPosRef.current = pos;
-    setDropPos((prev) => (prev === pos ? prev : pos));
-  };
-
-  const onDrop = (e: React.DragEvent): void => {
-    e.preventDefault();
-    const dragId = useStore.getState().outerDragId;
-    if (dragId) moveOuterTab(dragId, node.id, dropPosRef.current ?? 'center');
-    dropPosRef.current = null;
-    setDropPos(null);
-  };
 
   return (
     <div className="flex h-full min-h-0 min-w-0 flex-col">
@@ -153,15 +122,8 @@ function OuterGroupPanel({ node }: { node: Extract<LayoutNode, { type: 'group' }
           );
         })}
       </div>
-      {/* 内容区 + 拖拽停靠目标 */}
-      <div
-        className="relative min-h-0 flex-1"
-        onDragOver={onDragOver}
-        onDragLeave={() => setDropPos(null)}
-        onDrop={onDrop}
-      >
-        {dropPos && <div className={`pointer-events-none absolute z-20 ${dropIndicator[dropPos]} bg-[#007acc]/30`} />}
-      </div>
+      {/* 内容区（由池按矩形渲染） */}
+      <div className="relative min-h-0 flex-1" />
     </div>
   );
 }
@@ -235,6 +197,7 @@ export default function OuterWorkspace() {
   const outerTabs = useStore((s) => s.outerTabs);
   const outerLayout = useStore((s) => s.outerLayout);
   const outerDragId = useStore((s) => s.outerDragId);
+  const moveOuterTab = useStore((s) => s.moveOuterTab);
   const setRightDock = useStore((s) => s.setRightDock);
   const containerRef = useRef<HTMLDivElement>(null);
   const [size, setSize] = useState<{ w: number; h: number }>({ w: 0, h: 0 });
@@ -255,6 +218,11 @@ export default function OuterWorkspace() {
   const rects = useMemo(() => {
     if (!outerLayout || size.w === 0 || size.h === 0) return new Map<string, Rect>();
     return computeLeafRects(outerLayout, { x: 0, y: 0, w: size.w, h: size.h });
+  }, [outerLayout, size]);
+
+  const groupRects = useMemo(() => {
+    if (!outerLayout || size.w === 0 || size.h === 0) return new Map<string, Rect>();
+    return computeGroupRects(outerLayout, { x: 0, y: 0, w: size.w, h: size.h });
   }, [outerLayout, size]);
 
   return (
@@ -280,23 +248,20 @@ export default function OuterWorkspace() {
           </div>
         );
       })}
-      {/* 右缘停靠目标：拖外层 tab 到右缘 → 固定为右栏 */}
-      {outerDragId && outerLayout && (
-        <div
-          className="absolute top-0 right-0 bottom-0 z-30 flex w-16 flex-col items-center justify-center gap-1 border-l border-[#007acc]/50 bg-[#007acc]/20 text-[10px] text-[#4fc1ff]"
-          onDragOver={(e) => {
-            e.preventDefault();
-            e.dataTransfer.dropEffect = 'move';
+      {/* 右缘停靠与分屏合并：拖拽期间全屏覆盖层（按 group 矩形计算；右缘 64px = 停靠右栏） */}
+      {!!outerDragId && outerLayout && (
+        <DropOverlay
+          groupRects={groupRects}
+          allowDock
+          onGroupDrop={(gid, pos) => {
+            const id = useStore.getState().outerDragId;
+            if (id) moveOuterTab(id, gid, pos);
           }}
-          onDrop={(e) => {
-            e.preventDefault();
+          onDockDrop={() => {
             const id = useStore.getState().outerDragId;
             if (id) setRightDock(id);
           }}
-        >
-          <span>⏸</span>
-          <span>停靠右栏</span>
-        </div>
+        />
       )}
     </div>
   );

@@ -2,12 +2,13 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   useStore,
   collectGroups,
+  computeGroupRects,
   computeLeafRects,
-  type DropPos,
   type LayoutNode,
   type Rect,
 } from '../store';
 import TerminalView from '../components/TerminalView';
+import DropOverlay from '../components/DropOverlay';
 import OuterWorkspace, { OuterTabContent, OuterTabIcon, outerLabel } from './OuterLayout';
 
 /**
@@ -85,40 +86,7 @@ function InnerTab({ tabId, groupId }: { tabId: string; groupId: string }) {
 function GroupPanel({ node, hostId }: { node: Extract<LayoutNode, { type: 'group' }>; hostId: string }) {
   const activeTabId = node.activeTabId ?? node.tabIds[0] ?? null;
   const addTerminalToGroup = useStore((s) => s.addTerminalToGroup);
-  const moveTab = useStore((s) => s.moveTab);
   const setActiveTab = useStore((s) => s.setActiveTab);
-  const [dropPos, setDropPos] = useState<DropPos | null>(null);
-  const dropPosRef = useRef<DropPos | null>(null);
-
-  const onDragOver = (e: React.DragEvent): void => {
-    const dragId = useStore.getState().dragTabId;
-    if (!dragId) return;
-    e.preventDefault();
-    e.dataTransfer.dropEffect = 'move';
-    const rect = e.currentTarget.getBoundingClientRect();
-    const x = (e.clientX - rect.left) / rect.width;
-    const y = (e.clientY - rect.top) / rect.height;
-    const pos: DropPos =
-      x < 0.25 ? 'left' : x > 0.75 ? 'right' : y < 0.25 ? 'top' : y > 0.75 ? 'bottom' : 'center';
-    dropPosRef.current = pos;
-    setDropPos((prev) => (prev === pos ? prev : pos));
-  };
-
-  const onDrop = (e: React.DragEvent): void => {
-    e.preventDefault();
-    const dragId = useStore.getState().dragTabId;
-    if (dragId) moveTab(dragId, node.id, dropPosRef.current ?? 'center');
-    dropPosRef.current = null;
-    setDropPos(null);
-  };
-
-  const indicator: Record<DropPos, string> = {
-    left: 'left-0 top-0 bottom-0 w-1/4',
-    right: 'right-0 top-0 bottom-0 w-1/4',
-    top: 'top-0 left-0 right-0 h-1/4',
-    bottom: 'bottom-0 left-0 right-0 h-1/4',
-    center: 'inset-0',
-  };
 
   return (
     <div className="flex h-full min-h-0 min-w-0 flex-col">
@@ -135,19 +103,10 @@ function GroupPanel({ node, hostId }: { node: Extract<LayoutNode, { type: 'group
           ＋
         </button>
       </div>
-      {/* 内容 + 拖拽停靠目标：终端本体由 TerminalPool 按布局矩形绝对定位渲染（布局重组不卸载、不重连） */}
-      <div
-        className="relative min-h-0 flex-1"
-        onClick={() => activeTabId && setActiveTab(activeTabId)}
-        onDragOver={onDragOver}
-        onDragLeave={() => setDropPos(null)}
-        onDrop={onDrop}
-      >
+      {/* 内容区：终端本体由终端池按布局矩形绝对定位渲染；拖拽停靠由 DropOverlay 按矩形统一处理 */}
+      <div className="relative min-h-0 flex-1" onClick={() => activeTabId && setActiveTab(activeTabId)}>
         {node.tabIds.length === 0 && (
           <div className="flex h-full items-center justify-center text-[#5a5a5a]">终端已关闭</div>
-        )}
-        {dropPos && (
-          <div className={`pointer-events-none absolute z-20 ${indicator[dropPos]} bg-[#007acc]/30`} />
         )}
       </div>
     </div>
@@ -226,6 +185,8 @@ export function HostWorkspace({ hostId }: { hostId: string }) {
   const containerRef = useRef<HTMLDivElement>(null);
   const layout = useStore((s) => s.hostLayouts[hostId]);
   const tabs = useStore((s) => s.tabs);
+  const dragTabId = useStore((s) => s.dragTabId);
+  const moveTab = useStore((s) => s.moveTab);
   const [size, setSize] = useState<{ w: number; h: number }>({ w: 0, h: 0 });
 
   useEffect(() => {
@@ -246,6 +207,11 @@ export function HostWorkspace({ hostId }: { hostId: string }) {
     return computeLeafRects(layout, { x: 0, y: 0, w: size.w, h: size.h });
   }, [layout, size]);
 
+  const groupRects = useMemo(() => {
+    if (!layout || size.w === 0 || size.h === 0) return new Map<string, Rect>();
+    return computeGroupRects(layout, { x: 0, y: 0, w: size.w, h: size.h });
+  }, [layout, size]);
+
   const hostTabs = useMemo(
     () => tabs.filter((t) => t.hostId === Number(hostId)),
     [tabs, hostId],
@@ -261,6 +227,17 @@ export function HostWorkspace({ hostId }: { hostId: string }) {
       {hostTabs.map((t) => (
         <TerminalView key={t.id} tab={t} rect={rects.get(t.id) ?? null} />
       ))}
+      {/* 内层拖拽：全屏覆盖层按 group 矩形计算停靠（内容池与布局壳分离后事件不再经过壳） */}
+      {!!dragTabId && (
+        <DropOverlay
+          groupRects={groupRects}
+          onGroupDrop={(gid, pos) => {
+            const id = useStore.getState().dragTabId;
+            if (id) moveTab(id, gid, pos);
+          }}
+          onDockDrop={() => {}}
+        />
+      )}
     </div>
   );
 }
