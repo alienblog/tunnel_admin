@@ -156,6 +156,26 @@ export interface HostMetrics {
   net: { rxRate: number; txRate: number; interfaces: Array<{ name: string; rx: number; tx: number }> };
 }
 
+/** 关闭确认：终端仍有活动连接（连接中/已连接）时二次确认 */
+export function confirmCloseTab(tab: TerminalTab): boolean {
+  if (tab.status === 'connected' || tab.status === 'connecting') {
+    return window.confirm(`终端「${tab.hostName}」仍处于连接状态，确认关闭？关闭后将断开连接。`);
+  }
+  return true;
+}
+
+/** 关闭确认：主机仍有活动终端连接时二次确认 */
+export function confirmCloseHost(hostId: string): boolean {
+  const tabs = useStore.getState().tabs;
+  const active = tabs.filter(
+    (t) => t.hostId === Number(hostId) && (t.status === 'connected' || t.status === 'connecting'),
+  );
+  if (active.length > 0) {
+    return window.confirm(`该主机有 ${active.length} 个活动终端连接，关闭将全部断开，确认？`);
+  }
+  return true;
+}
+
 // ---- 布局树工具（纯函数，不可变操作） ----
 
 let groupSeq = 0;

@@ -3,6 +3,7 @@ import {
   useStore,
   computeGroupRects,
   computeLeafRects,
+  confirmCloseHost,
   type LayoutNode,
   type OuterTab,
   type Rect,
@@ -97,6 +98,7 @@ function OuterGroupPanel({ node }: { node: Extract<LayoutNode, { type: 'group' }
               draggable
               onDragStart={(e) => {
                 setOuterDragId(id);
+                useStore.getState().setDragTab(null); // 清内层残留（防串扰）
                 e.dataTransfer.effectAllowed = 'move';
               }}
               onDragEnd={() => setOuterDragId(null)}
@@ -111,6 +113,7 @@ function OuterGroupPanel({ node }: { node: Extract<LayoutNode, { type: 'group' }
               <button
                 onClick={(e) => {
                   e.stopPropagation();
+                  if (tab.kind === 'host' && !confirmCloseHost(tab.hostId)) return;
                   closeOuterTab(id);
                 }}
                 title="关闭"
@@ -229,14 +232,22 @@ export default function OuterWorkspace() {
   const { target: dropTarget, onDragOver, onDrop } = useDropTarget({
     groupRects,
     allowDock: true,
-    isDragging: () => useStore.getState().outerDragId !== null,
+    // 互斥：外层拖拽仅当内层无拖拽时处理（防残留 drag id 串扰）
+    isDragging: () => useStore.getState().outerDragId !== null && useStore.getState().dragTabId === null,
     onGroupDrop: (gid, pos) => {
       const id = useStore.getState().outerDragId;
-      if (id) moveOuterTab(id, gid, pos);
+      if (id) {
+        moveOuterTab(id, gid, pos);
+        // drop 后立即清 drag id（防 dragend 丢失残留）
+        useStore.getState().setOuterDragId(null);
+      }
     },
     onDockDrop: () => {
       const id = useStore.getState().outerDragId;
-      if (id) setRightDock(id);
+      if (id) {
+        setRightDock(id);
+        useStore.getState().setOuterDragId(null);
+      }
     },
   });
 

@@ -4,6 +4,8 @@ import {
   collectGroups,
   computeGroupRects,
   computeLeafRects,
+  confirmCloseHost,
+  confirmCloseTab,
   type LayoutNode,
   type Rect,
 } from '../store';
@@ -42,6 +44,7 @@ function InnerTab({ tabId, groupId }: { tabId: string; groupId: string }) {
       draggable
       onDragStart={(e) => {
         setDragTab(tabId);
+        useStore.getState().setOuterDragId(null); // 清外层残留（防串扰）
         e.dataTransfer.effectAllowed = 'move';
       }}
       onDragEnd={() => setDragTab(null)}
@@ -71,6 +74,7 @@ function InnerTab({ tabId, groupId }: { tabId: string; groupId: string }) {
       <button
         onClick={(e) => {
           e.stopPropagation();
+          if (!confirmCloseTab(tab)) return;
           closeTab(tabId);
         }}
         title="关闭"
@@ -215,10 +219,15 @@ export function HostWorkspace({ hostId }: { hostId: string }) {
   // 拖拽停靠：挂在容器根节点（事件冒泡必然到达，不依赖覆盖层渲染时机）
   const { target: dropTarget, onDragOver, onDrop } = useDropTarget({
     groupRects,
-    isDragging: () => useStore.getState().dragTabId !== null,
+    // 互斥：内层拖拽仅当外层无拖拽时处理（防残留 drag id 串扰）
+    isDragging: () => useStore.getState().dragTabId !== null && useStore.getState().outerDragId === null,
     onGroupDrop: (gid, pos) => {
       const id = useStore.getState().dragTabId;
-      if (id) moveTab(id, gid, pos);
+      if (id) {
+        moveTab(id, gid, pos);
+        // drop 后立即清 drag id：布局变化可能卸载拖拽源元素导致 dragend 丢失残留
+        useStore.getState().setDragTab(null);
+      }
     },
     onDockDrop: () => {},
   });
@@ -314,6 +323,7 @@ export default function Terminals() {
             draggable
             onDragStart={(e) => {
               setOuterDragId(rightTab.id);
+              useStore.getState().setDragTab(null); // 清内层残留（防串扰）
               e.dataTransfer.effectAllowed = 'move';
             }}
             onDragEnd={() => setOuterDragId(null)}
@@ -343,7 +353,10 @@ export default function Terminals() {
                 </button>
                 <button
                   title="关闭"
-                  onClick={() => closeOuterTab(rightTab.id)}
+                  onClick={() => {
+                    if (rightTab.kind === 'host' && !confirmCloseHost(rightTab.hostId)) return;
+                    closeOuterTab(rightTab.id);
+                  }}
                   className="rounded-sm px-1 text-[#858585] hover:bg-[#f14c4c]/20 hover:text-[#f14c4c]"
                 >
                   ×
