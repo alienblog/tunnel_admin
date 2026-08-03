@@ -4,6 +4,7 @@ import type { Config } from '../config.js';
 import { encryptText } from '../crypto.js';
 import { requireAuth } from './auth.js';
 import type { HostRow } from '../db.js';
+import type { SshManager } from '../ssh/manager.js';
 
 export interface HostInput {
   name?: string;
@@ -57,7 +58,7 @@ function toPublic(row: HostRow) {
   };
 }
 
-export function registerHosts(app: FastifyInstance, config: Config, db: Database.Database): void {
+export function registerHosts(app: FastifyInstance, config: Config, db: Database.Database, sshManager?: SshManager): void {
   app.get('/api/hosts', async (req, reply) => {
     if (!requireAuth(req, reply, config)) return;
     const rows = db.prepare('SELECT * FROM hosts ORDER BY "group", name').all() as HostRow[];
@@ -184,5 +185,36 @@ export function registerHosts(app: FastifyInstance, config: Config, db: Database
       );
     const cloned = db.prepare('SELECT * FROM hosts WHERE id = ?').get(result.lastInsertRowid) as HostRow;
     return toPublic(cloned);
+  });
+}
+
+/** 测试连接：主机表单「测试连接」按钮（不保存，连接就绪即断开） */
+export function registerHostTest(app: FastifyInstance, config: Config, sshManager: SshManager): void {
+  app.post('/api/hosts/test', async (req, reply) => {
+    if (!requireAuth(req, reply, config)) return;
+    const input = req.body as {
+      host?: string;
+      port?: number;
+      username?: string;
+      auth_type?: string;
+      password?: string;
+      private_key?: string;
+      passphrase?: string;
+      jump_host_id?: number | null;
+      credential_id?: number | null;
+    };
+    if (!input.host) return reply.code(400).send({ error: '请填写主机地址' });
+    const result = await sshManager.testConnect({
+      host: input.host,
+      port: input.port ?? 22,
+      username: input.username ?? 'root',
+      auth_type: input.auth_type ?? 'password',
+      password: input.password,
+      private_key: input.private_key,
+      passphrase: input.passphrase,
+      jump_host_id: input.jump_host_id ?? null,
+      credential_id: input.credential_id ?? null,
+    });
+    return result;
   });
 }

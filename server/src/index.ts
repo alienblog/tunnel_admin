@@ -11,7 +11,7 @@ import { openDb } from './db.js';
 import { SshManager } from './ssh/manager.js';
 import { ApprovalService } from './approval.js';
 import { registerAuth } from './routes/auth.js';
-import { registerHosts } from './routes/hosts.js';
+import { registerHosts, registerHostTest } from './routes/hosts.js';
 import { registerTokens } from './routes/tokens.js';
 import { registerCredentials } from './routes/credentials.js';
 import { registerApprovals, registerAudit, registerSessions, registerCmdRules } from './routes/misc.js';
@@ -39,6 +39,7 @@ await app.register(websocket);
 // API 路由
 registerAuth(app, config);
 registerHosts(app, config, db);
+registerHostTest(app, config, sshManager);
 registerTokens(app, config, db);
 registerCredentials(app, config, db);
 registerApprovals(app, config, approvals);

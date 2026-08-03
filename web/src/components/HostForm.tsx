@@ -45,6 +45,8 @@ export default function HostForm({ initial, onDone }: { initial: Host | null; on
   const [f, setF] = useState<FormState>(initial ? toForm(initial) : EMPTY);
   const [error, setError] = useState('');
   const [credentials, setCredentials] = useState<Credential[]>([]);
+  const [testing, setTesting] = useState(false);
+  const [testResult, setTestResult] = useState<{ ok: boolean; message: string } | null>(null);
   const hosts = useStore((s) => s.hosts);
   const loadHosts = useStore((s) => s.loadHosts);
   const editing = initial !== null;
@@ -95,6 +97,43 @@ export default function HostForm({ initial, onDone }: { initial: Host | null; on
       onDone();
     } catch (err) {
       setError((err as Error).message);
+    }
+  };
+
+  /** 测试连接：用当前表单配置直连目标（不保存），支持凭据引用与跳板机 */
+  const testConnection = async (): Promise<void> => {
+    if (!f.host) {
+      setTestResult({ ok: false, message: '请先填写主机地址' });
+      return;
+    }
+    setTesting(true);
+    setTestResult(null);
+    setError('');
+    try {
+      const body: Record<string, unknown> = {
+        host: f.host,
+        port: Number(f.port),
+        username: f.username,
+        auth_type: f.auth_type,
+        jump_host_id: f.jump_host_id ? Number(f.jump_host_id) : null,
+        credential_id: f.credential_id ? Number(f.credential_id) : null,
+      };
+      if (!f.credential_id) {
+        if (f.auth_type === 'password') body.password = f.password;
+        else {
+          body.private_key = f.private_key;
+          body.passphrase = f.passphrase || undefined;
+        }
+      }
+      const r = await api<{ ok: boolean; message: string }>('/api/hosts/test', {
+        method: 'POST',
+        body: JSON.stringify(body),
+      });
+      setTestResult(r);
+    } catch (err) {
+      setTestResult({ ok: false, message: (err as Error).message });
+    } finally {
+      setTesting(false);
     }
   };
 
@@ -204,7 +243,26 @@ export default function HostForm({ initial, onDone }: { initial: Host | null; on
         MCP 免审批直连（agent 连接时不再弹窗确认）
       </label>
       {error && <div className="col-span-2 text-sm text-[#f14c4c]">{error}</div>}
-      <div className="col-span-2 flex justify-end gap-2 pt-1">
+      {testResult && (
+        <div
+          className={`col-span-2 rounded-sm border px-3 py-1.5 text-xs ${
+            testResult.ok ? 'border-[#4ec9b0]/40 bg-[#14352e] text-[#4ec9b0]' : 'border-[#f14c4c]/40 bg-[#3b1d1d] text-[#f14c4c]'
+          }`}
+        >
+          {testResult.ok ? '✓ ' : '✗ '}
+          {testResult.message}
+        </div>
+      )}
+      <div className="col-span-2 flex items-center justify-end gap-2 pt-1">
+        <button
+          type="button"
+          onClick={() => void testConnection()}
+          disabled={testing || !f.host}
+          title="使用当前配置测试 SSH 连接（不保存）"
+          className="rounded-sm border border-[#3c3c3c] px-4 py-1.5 text-sm text-[#4ec9b0] hover:bg-[#14352e] disabled:cursor-not-allowed disabled:opacity-50"
+        >
+          {testing ? '测试中…' : '🔌 测试连接'}
+        </button>
         <button type="button" onClick={onDone} className="rounded-sm border border-[#3c3c3c] px-4 py-1.5 text-sm text-[#cccccc] hover:bg-[#3a3d41]">
           取消
         </button>

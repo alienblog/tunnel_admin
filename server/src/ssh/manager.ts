@@ -184,6 +184,88 @@ export class SshManager {
     return promise;
   }
 
+  /**
+   * 测试连接（主机表单「测试连接」按钮）：不注册会话，连接就绪后立即断开。
+   * 支持凭据引用与跳板机链；返回 { ok, message }。
+   */
+  async testConnect(
+    input: {
+      host: string;
+      port: number;
+      username: string;
+      auth_type: string;
+      password?: string;
+      private_key?: string;
+      passphrase?: string;
+      jump_host_id?: number | null;
+      credential_id?: number | null;
+    },
+    timeoutMs = 8000,
+  ): Promise<{ ok: boolean; message: string }> {
+    let username = input.username;
+    const creds: HostCreds = {};
+    // 凭据引用优先
+    if (input.credential_id) {
+      const cred = this.db.prepare('SELECT * FROM credentials WHERE id = ?').get(input.credential_id) as
+        | { username: string; password_enc: string | null; private_key_enc: string | null; passphrase_enc: string | null }
+        | undefined;
+      if (cred) {
+        if (cred.password_enc) creds.password = decryptText(this.masterKey, cred.password_enc);
+        if (cred.private_key_enc) creds.privateKey = decryptText(this.masterKey, cred.private_key_enc);
+        if (cred.passphrase_enc) creds.passphrase = decryptText(this.masterKey, cred.passphrase_enc);
+        username = cred.username;
+      }
+    } else {
+      if (input.password) creds.password = input.password;
+      if (input.private_key) creds.privateKey = input.private_key;
+      if (input.passphrase) creds.passphrase = input.passphrase;
+    }
+    const logs: string[] = [];
+    const log = (m: string): void => {
+      logs.push(m);
+    };
+    const cleanups: Array<() => void> = [];
+    try {
+      let sock: Readable | undefined;
+      if (input.jump_host_id) {
+        sock = await this.buildJumpPath(input.jump_host_id, input.host, input.port, cleanups, log);
+      }
+      const client = await connectClient(
+        buildConnectConfig(
+          {
+            id: 0,
+            name: input.host,
+            host: input.host,
+            port: input.port,
+            username,
+            auth_type: input.auth_type as 'password' | 'private_key',
+            password_enc: null,
+            private_key_enc: null,
+            passphrase_enc: null,
+            jump_host_id: null,
+            credential_id: null,
+            group: '',
+            tags: '',
+            note: '',
+            trusted: 0,
+            created_at: '',
+            updated_at: '',
+          },
+          creds,
+          sock,
+          timeoutMs,
+        ),
+        log,
+      );
+      client.end();
+      return { ok: true, message: '连接成功，认证通过' };
+    } catch (err) {
+      return { ok: false, message: (err as Error).message };
+    } finally {
+      cleanups.forEach((fn) => fn());
+    }
+  }
+
   get(id: string): SshSession | undefined {
     const s = this.sessions.get(id);
     if (s) {
