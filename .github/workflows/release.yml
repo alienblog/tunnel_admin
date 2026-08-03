@@ -90,7 +90,7 @@ jobs:
           body: |
             ## TunnelAdmin ${{ github.ref_name }}
 
-            基于 Web 的 SSH 连接管理器 + MCP Server，纯 Vibe Coding 项目（Oh My Pi + DeepSeek V4 Flash 模型驱动开发，累计花费 \$2，明细见 README「开发统计」）。
+            基于 Web 的 SSH 连接管理器 + MCP Server，纯 Vibe Coding 项目（Oh My Pi + DeepSeek V4 Flash 模型驱动开发）。
 
             ### 下载
 
