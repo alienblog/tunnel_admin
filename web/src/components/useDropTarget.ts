@@ -54,6 +54,8 @@ export function useDropTarget(opts: {
   const onDragOver = (e: React.DragEvent): void => {
     if (!opts.isDragging()) return;
     e.preventDefault();
+    // 本层处理后不再冒泡到外层（内外层拖拽完全隔离）
+    e.stopPropagation();
     e.dataTransfer.dropEffect = 'move';
     const cr = e.currentTarget.getBoundingClientRect();
     const x = e.clientX - cr.left;
@@ -87,6 +89,7 @@ export function useDropTarget(opts: {
   const onDrop = (e: React.DragEvent): void => {
     if (!opts.isDragging()) return;
     e.preventDefault();
+    e.stopPropagation();
     const t = targetRef.current;
     if (t?.kind === 'dock') opts.onDockDrop();
     else if (t?.kind === 'group') opts.onGroupDrop(t.id, t.pos);

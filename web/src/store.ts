@@ -540,6 +540,8 @@ export const useStore = create<AppState>((set, get) => ({
     if (tabId === targetGroupId) return;
     const layout = get().outerLayout;
     if (!layout || !get().outerTabs.some((t) => t.id === tabId)) return;
+    // 防御：目标必须是外层布局内的 group（防内层 group id 误传）
+    if (!collectGroups(layout).some((g) => g.id === targetGroupId)) return;
     const src = removeTabFromLayout(layout, tabId);
     if (!src) return;
     const outerLayout =
