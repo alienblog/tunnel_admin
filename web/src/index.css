@@ -37,3 +37,45 @@ body {
   overflow: auto;
   font-family: "SF Mono", Menlo, Consolas, "Courier New", monospace;
 }
+
+/* CodeMirror 搜索/替换面板（暗色，VSCode 风格） */
+.cm-panel.cm-search {
+  background: #252526;
+  color: #cccccc;
+  border-bottom: 1px solid #1e1e1e;
+  padding: 4px 8px;
+  font-size: 12px;
+}
+.cm-panel.cm-search input[type="text"],
+.cm-panel.cm-search input[type="search"] {
+  background: #1e1e1e;
+  border: 1px solid #3c3c3c;
+  border-radius: 2px;
+  color: #cccccc;
+  padding: 2px 6px;
+  outline: none;
+}
+.cm-panel.cm-search input:focus {
+  border-color: #007acc;
+}
+.cm-panel.cm-search button {
+  background: #0e639c;
+  color: #fff;
+  border: none;
+  border-radius: 2px;
+  padding: 2px 8px;
+  cursor: pointer;
+  font-size: 11px;
+}
+.cm-panel.cm-search button:hover {
+  background: #1177bb;
+}
+.cm-panel.cm-search label {
+  color: #858585;
+}
+.cm-searchMatch {
+  background: #613214 !important;
+}
+.cm-searchMatch-selected {
+  background: #006f5a !important;
+}

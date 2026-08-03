@@ -3,6 +3,7 @@ import { EditorState, type Extension } from '@codemirror/state';
 import { EditorView, lineNumbers, highlightActiveLine } from '@codemirror/view';
 import { history, historyKeymap, defaultKeymap, indentWithTab } from '@codemirror/commands';
 import { keymap } from '@codemirror/view';
+import { search, searchKeymap, highlightSelectionMatches } from '@codemirror/search';
 import { StreamLanguage, type StreamParser } from '@codemirror/language';
 import { oneDark } from '@codemirror/theme-one-dark';
 
@@ -90,7 +91,10 @@ export default function FileEditor({
           lineNumbers(),
           highlightActiveLine(),
           history(),
-          keymap.of([...defaultKeymap, ...historyKeymap, indentWithTab]),
+          // VSCode 式搜索/替换：Ctrl+F 搜索、Ctrl+H 替换、F3 下一个、Ctrl+D 选中下一个
+          search({ top: true }),
+          highlightSelectionMatches(),
+          keymap.of([...searchKeymap, ...defaultKeymap, ...historyKeymap, indentWithTab]),
           lang ?? [],
           oneDark,
           EditorView.lineWrapping,
