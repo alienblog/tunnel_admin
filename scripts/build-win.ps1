@@ -77,7 +77,9 @@ if ($LASTEXITCODE -ne 0) { throw 'electron-rebuild 失败' }
 
 # ---- 5. 打包 ----
 Write-Step "5/5 electron-builder（NSIS 安装器 + 便携 zip）"
-npx electron-builder --win nsis zip
+# --publish never：CI 有 tag 时 electron-builder 默认会尝试发布（需要 GH_TOKEN），
+# 上传统一由 GitHub Actions 的 release job 完成
+npx electron-builder --win nsis zip --publish never
 if ($LASTEXITCODE -ne 0) {
   $msg = $Error[0].Exception.Message
   if ($msg -match 'symbolic link|符号链接') {
