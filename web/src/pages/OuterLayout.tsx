@@ -7,7 +7,7 @@ import {
   type OuterTab,
   type Rect,
 } from '../store';
-import DropOverlay from '../components/DropOverlay';
+import { dropIndicatorStyle, useDropTarget } from '../components/useDropTarget';
 import { HostWorkspace } from './Terminals';
 import { AuditTab, EditorTab, SettingsTab, TransferTab } from './tabs';
 
@@ -225,8 +225,28 @@ export default function OuterWorkspace() {
     return computeGroupRects(outerLayout, { x: 0, y: 0, w: size.w, h: size.h });
   }, [outerLayout, size]);
 
+  // 拖拽停靠（含右缘停靠右栏）：挂在容器根节点
+  const { target: dropTarget, onDragOver, onDrop } = useDropTarget({
+    groupRects,
+    allowDock: true,
+    isDragging: () => useStore.getState().outerDragId !== null,
+    onGroupDrop: (gid, pos) => {
+      const id = useStore.getState().outerDragId;
+      if (id) moveOuterTab(id, gid, pos);
+    },
+    onDockDrop: () => {
+      const id = useStore.getState().outerDragId;
+      if (id) setRightDock(id);
+    },
+  });
+
   return (
-    <div ref={containerRef} className="relative h-full min-h-0 min-w-0">
+    <div
+      ref={containerRef}
+      className="relative h-full min-h-0 min-w-0"
+      onDragOver={onDragOver}
+      onDrop={onDrop}
+    >
       {outerLayout ? (
         <OuterLayoutView node={outerLayout} />
       ) : (
@@ -248,19 +268,11 @@ export default function OuterWorkspace() {
           </div>
         );
       })}
-      {/* 右缘停靠与分屏合并：拖拽期间全屏覆盖层（按 group 矩形计算；右缘 64px = 停靠右栏） */}
-      {!!outerDragId && outerLayout && (
-        <DropOverlay
-          groupRects={groupRects}
-          allowDock
-          onGroupDrop={(gid, pos) => {
-            const id = useStore.getState().outerDragId;
-            if (id) moveOuterTab(id, gid, pos);
-          }}
-          onDockDrop={() => {
-            const id = useStore.getState().outerDragId;
-            if (id) setRightDock(id);
-          }}
+      {/* 拖拽高亮（含右缘停靠） */}
+      {!!outerDragId && dropTarget && (
+        <div
+          className={`pointer-events-none absolute z-40 bg-[#007acc]/30 ${dropTarget.kind === 'dock' ? 'border-l border-[#007acc]/60' : ''}`}
+          style={dropIndicatorStyle(dropTarget)}
         />
       )}
     </div>

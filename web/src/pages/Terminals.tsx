@@ -8,7 +8,7 @@ import {
   type Rect,
 } from '../store';
 import TerminalView from '../components/TerminalView';
-import DropOverlay from '../components/DropOverlay';
+import { dropIndicatorStyle, useDropTarget } from '../components/useDropTarget';
 import OuterWorkspace, { OuterTabContent, OuterTabIcon, outerLabel } from './OuterLayout';
 
 /**
@@ -212,13 +212,29 @@ export function HostWorkspace({ hostId }: { hostId: string }) {
     return computeGroupRects(layout, { x: 0, y: 0, w: size.w, h: size.h });
   }, [layout, size]);
 
+  // 拖拽停靠：挂在容器根节点（事件冒泡必然到达，不依赖覆盖层渲染时机）
+  const { target: dropTarget, onDragOver, onDrop } = useDropTarget({
+    groupRects,
+    isDragging: () => useStore.getState().dragTabId !== null,
+    onGroupDrop: (gid, pos) => {
+      const id = useStore.getState().dragTabId;
+      if (id) moveTab(id, gid, pos);
+    },
+    onDockDrop: () => {},
+  });
+
   const hostTabs = useMemo(
     () => tabs.filter((t) => t.hostId === Number(hostId)),
     [tabs, hostId],
   );
 
   return (
-    <div ref={containerRef} className="relative h-full min-h-0 min-w-0">
+    <div
+      ref={containerRef}
+      className="relative h-full min-h-0 min-w-0"
+      onDragOver={onDragOver}
+      onDrop={onDrop}
+    >
       {layout ? (
         <LayoutNodeView node={layout} hostId={hostId} />
       ) : (
@@ -227,16 +243,9 @@ export function HostWorkspace({ hostId }: { hostId: string }) {
       {hostTabs.map((t) => (
         <TerminalView key={t.id} tab={t} rect={rects.get(t.id) ?? null} />
       ))}
-      {/* 内层拖拽：全屏覆盖层按 group 矩形计算停靠（内容池与布局壳分离后事件不再经过壳） */}
-      {!!dragTabId && (
-        <DropOverlay
-          groupRects={groupRects}
-          onGroupDrop={(gid, pos) => {
-            const id = useStore.getState().dragTabId;
-            if (id) moveTab(id, gid, pos);
-          }}
-          onDockDrop={() => {}}
-        />
+      {/* 拖拽高亮（pointer-events-none，不拦截交互） */}
+      {!!dragTabId && dropTarget && (
+        <div className="pointer-events-none absolute z-40 bg-[#007acc]/30" style={dropIndicatorStyle(dropTarget)} />
       )}
     </div>
   );
