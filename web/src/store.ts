@@ -97,12 +97,12 @@ export function computeLeafRects(node: LayoutNode | null, bounds: Rect): Map<str
   return map;
 }
 
-/** 布局树 → 每个 group 面板的拖拽停靠区域矩形（内容区，tab 栏占顶部 32px） */
+/** 布局树 → 每个 group 面板的拖拽停靠区域矩形（整个面板含 tab 栏，拖到 tab 栏同样生效） */
 export function computeGroupRects(node: LayoutNode | null, bounds: Rect): Map<string, Rect> {
   const map = new Map<string, Rect>();
   if (!node) return map;
   if (node.type === 'group') {
-    map.set(node.id, { ...bounds, y: bounds.y + 32, h: Math.max(0, bounds.h - 32) });
+    map.set(node.id, { ...bounds });
     return map;
   }
   const [a, b] = node.children;
@@ -542,6 +542,11 @@ export const useStore = create<AppState>((set, get) => ({
     if (!layout || !get().outerTabs.some((t) => t.id === tabId)) return;
     // 防御：目标必须是外层布局内的 group（防内层 group id 误传）
     if (!collectGroups(layout).some((g) => g.id === targetGroupId)) return;
+    // 已在目标组：合并无操作（防重复添加）
+    if (pos === 'center') {
+      const tg = collectGroups(layout).find((g) => g.id === targetGroupId);
+      if (tg?.tabIds.includes(tabId)) return;
+    }
     const src = removeTabFromLayout(layout, tabId);
     if (!src) return;
     const outerLayout =
@@ -823,6 +828,11 @@ export const useStore = create<AppState>((set, get) => ({
       collectGroups(l).some((g) => g.id === targetGroupId),
     )?.[0];
     if (!srcHost || !dstHost) return;
+    // 已在目标组：合并无操作（防重复添加）
+    if (pos === 'center') {
+      const tg = collectGroups(get().hostLayouts[dstHost]).find((g) => g.id === targetGroupId);
+      if (tg?.tabIds.includes(tabId)) return;
+    }
     const hostLayouts = { ...get().hostLayouts };
     if (pos === 'center') {
       // 合并：从源组移除并加入目标组
