@@ -15,7 +15,7 @@
     "desktop:start": "electron desktop/main.js",
     "dist:desktop": "npm run build && electron-builder --dir",
     "dist:win": "npm run build && electron-builder --win nsis zip",
-    "dist:linux": "npm run build && electron-builder --linux AppImage"
+    "dist:linux": "npm run build && electron-builder --linux AppImage --publish never"
   },
   "devDependencies": {
     "concurrently": "^9.1.0",
@@ -43,6 +43,7 @@
       "node_modules/**"
     ],
     "files": [
+      "build/icon.png",
       "desktop/main.js",
       "desktop/server-launch.js",
       "server/dist/**",
@@ -58,20 +59,23 @@
         "nsis",
         "zip"
       ],
-      "artifactName": "TunnelAdmin-${version}-${arch}.${ext}"
+      "artifactName": "TunnelAdmin-${version}-${arch}.${ext}",
+      "icon": "build/icon.ico"
     },
     "linux": {
       "target": [
         "AppImage"
       ],
       "category": "Network",
-      "artifactName": "TunnelAdmin-${version}-${arch}.${ext}"
+      "artifactName": "TunnelAdmin-${version}-${arch}.${ext}",
+      "icon": "build/icon.png"
     },
     "nsis": {
       "oneClick": false,
       "allowToChangeInstallationDirectory": true,
       "shortcutName": "TunnelAdmin"
-    }
+    },
+    "electronVersion": "33.4.11"
   },
   "engines": {
     "node": ">=22"

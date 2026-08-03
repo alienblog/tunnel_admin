@@ -90,6 +90,7 @@ if (!gotLock) {
       minHeight: 600,
       title: 'TunnelAdmin',
       autoHideMenuBar: true,
+      icon: path.join(__dirname, '..', 'build', 'icon.png'),
       webPreferences: {
         contextIsolation: true,
         nodeIntegration: false,
