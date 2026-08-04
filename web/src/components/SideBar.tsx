@@ -89,6 +89,35 @@ function SessionSideBar({ onHostContextMenu }: { onHostContextMenu: (e: React.Mo
   const [openTabs, setOpenTabs] = useState(true);
   const [openAgents, setOpenAgents] = useState(false);
   const [openHosts, setOpenHosts] = useState(true);
+  // 「已打开终端」按主机分组折叠状态（localStorage 持久化）
+  const [collapsedTabGroups, setCollapsedTabGroups] = useState<Record<string, boolean>>(() => {
+    try {
+      return JSON.parse(localStorage.getItem('ta-collapsed-opentabs') ?? '{}') as Record<string, boolean>;
+    } catch {
+      return {};
+    }
+  });
+  const toggleTabGroup = (hostId: string): void => {
+    setCollapsedTabGroups((prev) => {
+      const next = { ...prev, [hostId]: !prev[hostId] };
+      try {
+        localStorage.setItem('ta-collapsed-opentabs', JSON.stringify(next));
+      } catch {
+        // 忽略存储失败
+      }
+      return next;
+    });
+  };
+  // 按主机分组（保持 tab 打开顺序）
+  const tabGroups = useMemo(() => {
+    const map = new Map<number, (typeof tabs)[number][]>();
+    for (const t of tabs) {
+      const list = map.get(t.hostId) ?? [];
+      list.push(t);
+      map.set(t.hostId, list);
+    }
+    return [...map.entries()].map(([hostId, list]) => ({ hostId, hostName: list[0].hostName, tabs: list }));
+  }, [tabs]);
 
   const section = (label: string, icon: string, opened: boolean, onToggle: () => void): React.ReactNode => (
     <button
@@ -105,21 +134,57 @@ function SessionSideBar({ onHostContextMenu }: { onHostContextMenu: (e: React.Mo
       {/* 已打开终端（最上，默认展开） */}
       {section('已打开终端', '🖥', openTabs, () => setOpenTabs(!openTabs))}
       {openTabs && (
-        <div className="max-h-40 overflow-y-auto pb-1">
-          {tabs.map((t) => (
-            <div
-              key={t.id}
-              className={`flex cursor-pointer items-center gap-1.5 rounded-sm px-2 py-[3px] text-[13px] hover:bg-[#2a2d2e] ${
-                t.ended ? 'text-[#5a5a5a]' : 'text-[#cccccc]'
-              }`}
-              onClick={() => setActiveTab(t.id)}
-            >
-              <span className="truncate">{t.kind === 'agent' ? '🤖 ' : ''}{t.hostName}</span>
-              {t.notify === 'error' && <span className="text-[#f14c4c]">✗</span>}
-              {t.notify === 'warning' && <span className="text-[#cca700]">⚠</span>}
-              {t.notify === 'success' && <span className="text-[#4ec9b0]">✓</span>}
-            </div>
-          ))}
+        <div className="max-h-48 overflow-y-auto pb-1">
+          {tabGroups.map((g) => {
+            const isCollapsed = !!collapsedTabGroups[String(g.hostId)];
+            const hasActive = g.tabs.some((t) => !t.ended);
+            return (
+              <div key={g.hostId}>
+                <div
+                  className="flex cursor-pointer items-center gap-1.5 rounded-sm px-2 py-[3px] text-[12px] font-medium text-[#cccccc] hover:bg-[#2a2d2e]"
+                  onClick={() => toggleTabGroup(String(g.hostId))}
+                  title={isCollapsed ? `展开 ${g.hostName} 的终端` : `折叠 ${g.hostName} 的终端`}
+                >
+                  <span className={`w-3 shrink-0 text-[10px] text-[#858585] transition-transform ${isCollapsed ? '' : 'rotate-90'}`}>
+                    ▶
+                  </span>
+                  <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${hasActive ? 'bg-[#4ec9b0]' : 'bg-[#5a5a5a]'}`} />
+                  <span className="min-w-0 flex-1 truncate">{g.hostName}</span>
+                  <span className="shrink-0 text-[10px] text-[#5a5a5a]">{g.tabs.length}</span>
+                </div>
+                {!isCollapsed &&
+                  g.tabs.map((t, i) => (
+                    <div
+                      key={t.id}
+                      className={`flex cursor-pointer items-center gap-1.5 rounded-sm py-[3px] pr-2 pl-6 text-[12px] hover:bg-[#2a2d2e] ${
+                        t.ended ? 'text-[#5a5a5a]' : 'text-[#cccccc]'
+                      }`}
+                      onClick={() => setActiveTab(t.id)}
+                    >
+                      {t.kind === 'agent' ? (
+                        <span className="w-3 shrink-0 text-center text-[10px]">🤖</span>
+                      ) : (
+                        <span
+                          className={`h-1.5 w-1.5 shrink-0 rounded-full ${
+                            t.ended
+                              ? 'bg-[#5a5a5a]'
+                              : t.status === 'connected'
+                                ? 'bg-[#4ec9b0]'
+                                : t.status === 'error'
+                                  ? 'bg-[#f14c4c]'
+                                  : 'animate-pulse bg-[#cca700]'
+                          }`}
+                        />
+                      )}
+                      <span className="truncate">{t.kind === 'agent' ? 'Agent 会话' : `终端 ${i + 1}`}</span>
+                      {t.notify === 'error' && <span className="text-[#f14c4c]">✗</span>}
+                      {t.notify === 'warning' && <span className="text-[#cca700]">⚠</span>}
+                      {t.notify === 'success' && <span className="text-[#4ec9b0]">✓</span>}
+                    </div>
+                  ))}
+              </div>
+            );
+          })}
           {tabs.length === 0 && <div className="px-3 py-1 text-[12px] text-[#5a5a5a]">暂无</div>}
         </div>
       )}
@@ -170,6 +235,7 @@ function SessionSideBar({ onHostContextMenu }: { onHostContextMenu: (e: React.Mo
 function HostsSideBar({ onContextMenu }: { onContextMenu: (e: React.MouseEvent, h: Host) => void }) {
   const hosts = useStore((s) => s.hosts);
   const loadHosts = useStore((s) => s.loadHosts);
+  const addTab = useStore((s) => s.addTab);
   const hostModal = useStore((s) => s.hostModal);
   const openHostModal = useStore((s) => s.openHostModal);
   const closeHostModal = useStore((s) => s.closeHostModal);
@@ -251,6 +317,12 @@ function HostsSideBar({ onContextMenu }: { onContextMenu: (e: React.MouseEvent, 
                       key={h.id}
                       className="group flex cursor-context-menu items-center gap-1.5 rounded-sm px-2 py-[3px] text-[13px] text-[#cccccc] hover:bg-[#2a2d2e]"
                       onContextMenu={(e) => onContextMenu(e, h)}
+                      onDoubleClick={(e) => {
+                        // 双击打开终端连接（编辑/删除按钮上双击不触发）
+                        if ((e.target as HTMLElement).closest('button')) return;
+                        void addTab(h);
+                      }}
+                      title={`${h.username}@${h.host}:${h.port}（双击打开终端）`}
                     >
                       <span className="truncate">{h.name}</span>
                       {h.trusted && <span className="text-[10px] text-[#4ec9b0]">●</span>}
