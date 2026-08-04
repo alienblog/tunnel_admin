@@ -3,7 +3,7 @@ import { api, type AuditEntry, type CmdRule, type Credential, type McpToken } fr
 import { useStore, type OuterTab } from '../store';
 import FileEditor from '../components/FileEditor';
 import { THEME_NAMES } from '../themes';
-import { getDesktop } from '../desktop';
+import { getDesktop, type DownloadPrefs } from '../desktop';
 
 /** 外层工具 tab：文件编辑器 / 设置 / 传输管理器 / 审计 */
 
@@ -634,6 +634,90 @@ function McpSettings() {
   );
 }
 
+/** 下载管理器：默认目录 / 每次询问模式（仅桌面版） */
+function DownloadSettings() {
+  const desktop = getDesktop();
+  const [prefs, setPrefs] = useState<DownloadPrefs | null>(null);
+
+  useEffect(() => {
+    if (desktop) void desktop.getDownloadPrefs().then(setPrefs);
+  }, [desktop]);
+
+  if (!desktop) {
+    return <div className="text-[12px] text-[#858585]">下载设置仅桌面版可用（Web 版由浏览器管理下载位置）</div>;
+  }
+  if (!prefs) return <div className="text-[12px] text-[#858585]">加载中…</div>;
+
+  const update = (p: Partial<DownloadPrefs>): void => {
+    void desktop.setDownloadPrefs(p).then(setPrefs);
+  };
+
+  return (
+    <div className="flex flex-col gap-3">
+      <div className="mb-1 text-[13px] font-semibold text-[#cccccc]">下载</div>
+      <label className="flex cursor-pointer items-start gap-2 text-[12px] text-[#cccccc]">
+        <input
+          type="radio"
+          name="dl-mode"
+          checked={prefs.mode === 'ask'}
+          onChange={() => update({ mode: 'ask' })}
+          className="mt-0.5 accent-[#007acc]"
+        />
+        <span>
+          每次下载前询问
+          <span className="ml-1 text-[#858585]">（一次下载多个文件只询问一次，选择目录后本批文件全部存入）</span>
+        </span>
+      </label>
+      <label className="flex cursor-pointer items-start gap-2 text-[12px] text-[#cccccc]">
+        <input
+          type="radio"
+          name="dl-mode"
+          checked={prefs.mode === 'default'}
+          onChange={() => update({ mode: 'default' })}
+          className="mt-0.5 accent-[#007acc]"
+        />
+        <span>
+          直接下载到默认目录
+          <span className="ml-1 text-[#858585]">（点击下载后立即开始，不再询问）</span>
+        </span>
+      </label>
+      {prefs.mode === 'default' && (
+        <div className="mt-1 flex items-center gap-2">
+          <span className="shrink-0 text-[12px] text-[#cccccc]">默认目录：</span>
+          <span
+            title={prefs.dir || '系统下载目录'}
+            className="min-w-0 flex-1 truncate rounded-sm border border-[#3c3c3c] bg-[#1e1e1e] px-2 py-1 text-[12px] text-[#cccccc]"
+          >
+            {prefs.dir || '系统下载目录'}
+          </span>
+          <button
+            onClick={() => {
+              void desktop.chooseDownloadDir().then((d) => {
+                if (d) update({ dir: d });
+              });
+            }}
+            className="shrink-0 rounded-sm border border-[#3c3c3c] px-3 py-1 text-[12px] text-[#cccccc] hover:bg-[#3a3d41]"
+          >
+            选择…
+          </button>
+          {prefs.dir && (
+            <button
+              onClick={() => update({ dir: '' })}
+              title="改回系统下载目录"
+              className="shrink-0 rounded-sm border border-[#3c3c3c] px-3 py-1 text-[12px] text-[#f14c4c] hover:bg-[#3b1d1d]"
+            >
+              恢复系统默认
+            </button>
+          )}
+        </div>
+      )}
+      <div className="mt-2 text-[11px] text-[#5a5a5a]">
+        下载完成后可在传输管理器中对每个文件点击「📂 定位」打开所在文件夹并选中文件。
+      </div>
+    </div>
+  );
+}
+
 /** 凭据管理：单独保存用户名/密码/私钥，设置主机时可下拉引用 */
 function CredentialsSettings() {
   const [list, setList] = useState<Credential[]>([]);
@@ -876,7 +960,7 @@ function PasswordSettings() {
 
 /** 设置页：左侧分类导航 + 右侧内容 */
 export function SettingsTab() {
-  const [section, setSection] = useState<'terminal' | 'monitor' | 'mcp' | 'quick' | 'password' | 'credentials'>('terminal');
+  const [section, setSection] = useState<'terminal' | 'monitor' | 'mcp' | 'quick' | 'password' | 'credentials' | 'download'>('terminal');
   const themeName = useStore((s) => s.terminalTheme);
   const setTerminalTheme = useStore((s) => s.setTerminalTheme);
 
@@ -885,6 +969,7 @@ export function SettingsTab() {
     { key: 'monitor', label: '监控', icon: '📈' },
     { key: 'mcp', label: 'MCP', icon: '🤖' },
     { key: 'credentials', label: '凭据', icon: '🔑' },
+    ...(getDesktop() ? [{ key: 'download' as const, label: '下载', icon: '📥' }] : []),
     { key: 'quick', label: '快捷命令', icon: '⚡' },
     { key: 'password', label: '密码', icon: '🔒' },
   ];
@@ -936,6 +1021,7 @@ export function SettingsTab() {
         )}
         {section === 'mcp' && <McpSettings />}
         {section === 'credentials' && <CredentialsSettings />}
+        {section === 'download' && <DownloadSettings />}
         {section === 'quick' && (
           <div className="flex flex-col gap-2">
             <div className="mb-1 text-[13px] font-semibold text-[#cccccc]">快捷命令</div>

@@ -59,14 +59,62 @@ if (!gotLock) {
   });
 
   app.whenReady().then(async () => {
+    // ---- 下载管理器：预fs（userData/download-prefs.json）+ IPC ----------------
+    // 下载模式：ask（每次下载前选目录，批量 5 秒窗口只问一次）/ default（直接下到默认目录）
+    const prefsPath = () => path.join(app.getPath('userData'), 'download-prefs.json');
+    let downloadPrefs = { mode: 'ask', dir: '' };
+    try {
+      downloadPrefs = { mode: 'ask', dir: '', ...JSON.parse(fs.readFileSync(prefsPath(), 'utf8')) };
+    } catch {
+      // 首次运行无预fs
+    }
+    const savePrefs = () => {
+      try {
+        fs.mkdirSync(path.dirname(prefsPath()), { recursive: true });
+        fs.writeFileSync(prefsPath(), JSON.stringify(downloadPrefs));
+      } catch (err) {
+        console.error('保存下载预fs失败:', err);
+      }
+    };
+    ipcMain.handle('ta:get-download-prefs', () => ({ ...downloadPrefs }));
+    ipcMain.handle('ta:set-download-prefs', (_e, p) => {
+      downloadPrefs = { mode: p?.mode === 'default' ? 'default' : 'ask', dir: typeof p?.dir === 'string' ? p.dir : '' };
+      savePrefs();
+      return { ...downloadPrefs };
+    });
+    ipcMain.handle('ta:choose-download-dir', async () => {
+      const r = await dialog.showOpenDialog({ title: '选择默认下载目录', properties: ['openDirectory', 'createDirectory'] });
+      return r.canceled ? null : r.filePaths[0];
+    });
+
+    // 下载：模式决策（ask 弹窗选择目录，5 秒窗口内批量下载只询问一次）
+    let pendingDir = { dir: '', ts: 0 };
+    const decideDir = async () => {
+      const now = Date.now();
+      // default 模式：直接下到默认目录（不经过询问/复用窗口）
+      if (downloadPrefs.mode !== 'ask') return downloadPrefs.dir || app.getPath('downloads');
+      // ask 模式：5 秒窗口内批量下载只询问一次
+      if (pendingDir.dir && now - pendingDir.ts < 5000) return pendingDir.dir;
+      const r = await dialog.showOpenDialog({ title: '选择下载目录', properties: ['openDirectory', 'createDirectory'] });
+      if (r.canceled) return null;
+      pendingDir = { dir: r.filePaths[0], ts: now };
+      return pendingDir.dir;
+    };
+
     // 下载完成 → 通知渲染进程保存路径（传输管理器「📂 定位」按钮用）
     session.defaultSession.on('will-download', (_e, item) => {
       const name = item.getFilename();
-      const savePath = item.getSavePath();
+      void decideDir().then((dir) => {
+        if (!dir) {
+          item.cancel();
+          return;
+        }
+        item.setSavePath(path.join(dir, name));
+      });
       item.once('done', (_ev, state) => {
         if (state !== 'completed') return;
         for (const w of BrowserWindow.getAllWindows()) {
-          w.webContents.send('ta:download-done', { name, path: savePath });
+          w.webContents.send('ta:download-done', { name, path: item.getSavePath() });
         }
       });
     });

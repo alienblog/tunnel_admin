@@ -13,4 +13,7 @@ contextBridge.exposeInMainWorld('taDesktop', {
     return () => ipcRenderer.removeListener('ta:download-done', listener);
   },
   showItemInFolder: (p) => ipcRenderer.send('ta:show-item', p),
+  getDownloadPrefs: () => ipcRenderer.invoke('ta:get-download-prefs'),
+  setDownloadPrefs: (p) => ipcRenderer.invoke('ta:set-download-prefs', p),
+  chooseDownloadDir: () => ipcRenderer.invoke('ta:choose-download-dir'),
 });
