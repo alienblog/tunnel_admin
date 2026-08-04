@@ -387,7 +387,7 @@ function StatusBar() {
         <MetricsBar />
       </div>
       <StatusMcp />
-      <span className="whitespace-nowrap">v0.2.6</span>
+      <span className="whitespace-nowrap">v0.2.7</span>
     </div>
   );
 }

@@ -136,7 +136,7 @@ export function registerMcpEndpoint(app: FastifyInstance, deps: McpDeps): void {
       }
       // 无状态模式：每个请求新建 Server + transport（Protocol 单实例只支持单 transport）
       const server = new McpServer(
-        { name: 'tunneladmin', version: '0.2.6' },
+        { name: 'tunneladmin', version: '0.2.7' },
         { capabilities: { tools: {} } },
       );
       registerTools(server, deps);
