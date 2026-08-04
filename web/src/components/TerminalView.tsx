@@ -844,10 +844,10 @@ function TerminalViewInner({ tab, rect }: { tab: TerminalTab; rect: Rect | null 
         <div
           className="absolute z-50 w-72 overflow-hidden rounded-sm border border-[#3c3c3c]/70 bg-[#252526]/90 shadow-2xl backdrop-blur-sm"
           style={(() => {
-            // 优先在光标行下方弹出（留一行间距，不遮当前输入行）；
-            // 下方空间不足时收窄高度；完全放不下才弹到上方（底部对齐光标行上方，仍留间距）
+            // 优先在光标行下方弹出（下移约两行多，完全不遮当前输入行）；
+            // 下方空间不足时收窄高度；完全放不下才弹到上方（仍留间距）
             const elH = termRef.current?.element?.clientHeight ?? 0;
-            const gap = 6;
+            const gap = 43;
             const below = elH - (completion.y + 13 + gap);
             const listMaxH = Math.min(224, Math.max(48, below - 44));
             const totalH = listMaxH + 44;
@@ -858,7 +858,7 @@ function TerminalViewInner({ tab, rect }: { tab: TerminalTab; rect: Rect | null 
           <div
             className="overflow-y-auto py-0.5"
             style={{
-              maxHeight: Math.min(224, Math.max(48, (termRef.current?.element?.clientHeight ?? 0) - (completion.y + 13 + 6) - 44)),
+              maxHeight: Math.min(224, Math.max(48, (termRef.current?.element?.clientHeight ?? 0) - (completion.y + 13 + 43) - 44)),
             }}
           >
             {completion.items.map((it, i) => (
