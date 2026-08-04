@@ -175,10 +175,24 @@ function SessionSideBar({ onHostContextMenu }: { onHostContextMenu: (e: React.Mo
               <div key={g.hostId}>
                 <div
                   className="flex cursor-pointer items-center gap-1.5 rounded-sm px-2 py-[3px] text-[12px] font-medium text-[#cccccc] hover:bg-[#2a2d2e]"
-                  onClick={() => toggleTabGroup(String(g.hostId))}
-                  title={isCollapsed ? `展开 ${g.hostName} 的终端` : `折叠 ${g.hostName} 的终端`}
+                  onClick={() => {
+                    // 点击组头：激活组内上次激活的终端（无记录则第一个）
+                    const lastId = useStore.getState().lastActiveByHost[g.hostId];
+                    const target =
+                      (lastId && g.tabs.some((t) => t.id === lastId) ? g.tabs.find((t) => t.id === lastId) : null) ??
+                      g.tabs[0];
+                    if (target) setActiveTab(target.id);
+                  }}
+                  title={`点击激活 ${g.hostName} 的终端`}
                 >
-                  <span className={`w-3 shrink-0 text-[10px] text-[#858585] transition-transform ${isCollapsed ? '' : 'rotate-90'}`}>
+                  <span
+                    className={`w-3 shrink-0 cursor-pointer text-[10px] text-[#858585] transition-transform ${isCollapsed ? '' : 'rotate-90'}`}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      toggleTabGroup(String(g.hostId));
+                    }}
+                    title={isCollapsed ? `展开 ${g.hostName} 的终端` : `折叠 ${g.hostName} 的终端`}
+                  >
                     ▶
                   </span>
                   <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${hasActive ? 'bg-[#4ec9b0]' : 'bg-[#5a5a5a]'}`} />

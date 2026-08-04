@@ -412,6 +412,8 @@ interface AppState {
   closeHostWorkspace: (hostId: string) => void;
   /** 定位终端所在主机并激活 */
   setActiveTab: (id: string | null) => void;
+  /** 每台主机最后激活的 tab id（点击主机组头时恢复） */
+  lastActiveByHost: Record<number, string>;
   /** 拖拽停靠：拖 tabId 到 targetGroupId 面板（边缘分屏 / 中心合并） */
   moveTab: (tabId: string, targetGroupId: string, pos: DropPos) => void;
   /** 调整分屏比例（拖动分割栏） */
@@ -518,6 +520,7 @@ export const useStore = create<AppState>((set, get) => ({
   metrics: null,
   alertThresholds: { cpu: 90, mem: 90, disk: 90 },
   terminalTheme: 'dark-plus',
+  lastActiveByHost: {},
   mcpUrl: '',
   toasts: [],
   sftp: { hostId: '', path: '/', selectedPath: null, revealPath: null },
@@ -876,6 +879,7 @@ export const useStore = create<AppState>((set, get) => ({
     set({
       hostLayouts: { ...get().hostLayouts, [hostId]: layout },
       activeTabId: id,
+      lastActiveByHost: { ...get().lastActiveByHost, [hostId]: id },
       tabs: get().tabs.map((t) => (t.id === id && t.notify ? { ...t, notify: undefined } : t)),
     });
     get().openHostOuter(hostId);
