@@ -12,27 +12,39 @@ import { useStore, type Rect, type TerminalTab } from '../store';
 
 interface CompletionItem {
   text: string;
-  type: 'cmd' | 'file' | 'dir';
+  type: 'cmd' | 'file' | 'dir' | 'svc';
 }
 
 interface CompletionState {
   items: CompletionItem[];
   selected: number;
-  kind: 'cmd' | 'path';
+  kind: 'cmd' | 'path' | 'svc';
   prefix: string;
   x: number;
   y: number;
 }
 
+/** systemctl 服务操作子命令（这些命令的参数是服务名，按服务补全而非路径） */
+const SYSTEMCTL_ACTIONS = new Set([
+  'start', 'stop', 'restart', 'status', 'enable', 'disable', 'reload', 'restart', 'mask', 'unmask',
+  'is-active', 'is-enabled', 'is-failed', 'try-restart', 'reload-or-restart', 'show', 'cat', 'edit',
+]);
+
 /** 从输入缓冲与光标位置推导补全上下文 */
-function getCompletionContext(buf: string, cursor: number): { kind: 'cmd' | 'path'; prefix: string; force: boolean } | null {
+function getCompletionContext(buf: string, cursor: number): { kind: 'cmd' | 'path' | 'svc'; prefix: string; force: boolean } | null {
   const before = buf.slice(0, cursor);
   const firstSpace = before.indexOf(' ');
   if (firstSpace === -1) {
     if (before.trim() === '') return null;
     return { kind: 'cmd', prefix: before, force: true };
   }
-  const lastWord = before.split(' ').pop() ?? '';
+  const words = before.split(' ');
+  const lastWord = words.pop() ?? '';
+  // systemctl <动作> <前缀> → 服务名补全（如 systemctl restart ssh → ssh.service）；
+  // 空前缀（如 systemctl restart <空格>）仅 Tab 强制时返回（自动模式抑制，见 requestCompletion）
+  if (words[0] === 'systemctl' && words[1] !== undefined && SYSTEMCTL_ACTIONS.has(words[1])) {
+    return { kind: 'svc', prefix: lastWord, force: true };
+  }
   if (lastWord === '') return null; // 空格结尾：不自动弹出（Tab 仍可强制）
   return { kind: 'path', prefix: lastWord, force: false };
 }
@@ -137,6 +149,12 @@ function TerminalViewInner({ tab, rect }: { tab: TerminalTab; rect: Rect | null 
     const cur = cursorRef.current;
     const ctx = getCompletionContext(buf, cur);
     if (!ctx) {
+      closeCompletion();
+      closeGhost();
+      return;
+    }
+    // 空前缀（如 systemctl restart <空格>）仅 Tab 强制触发，自动模式抑制（避免输入空格弹全部服务）
+    if (!force && ctx.prefix === '') {
       closeCompletion();
       closeGhost();
       return;
@@ -822,6 +840,8 @@ function TerminalViewInner({ tab, rect }: { tab: TerminalTab; rect: Rect | null 
                     <span className="text-[#dcb67a]">▸</span>
                   ) : it.type === 'cmd' ? (
                     <span className="text-[#4fc1ff]">&gt;_</span>
+                  ) : it.type === 'svc' ? (
+                    <span className="text-[#4ec9b0]">⚙</span>
                   ) : (
                     <span className="text-[#858585]">·</span>
                   )}

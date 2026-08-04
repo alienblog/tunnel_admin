@@ -8,6 +8,7 @@ import type { SftpSessionCache } from './sftpSession.js';
  * 命令/路径自动补全：远程 compgen 取数据，前端渲染。
  * - cmd：compgen -c 命令表（主机维度缓存 5 分钟）
  * - path：cd cwd && compgen -f/-d 实时查询
+ * - svc：systemctl list-unit-files 服务名（主机维度缓存 5 分钟）
  * 非 bash 环境自动降级（PATH 扫描 / ls 通配）。
  */
 
@@ -45,13 +46,14 @@ function execCapture(session: SshSession, cmd: string, timeoutMs: number): Promi
 
 export interface CompleteItem {
   text: string;
-  type: 'cmd' | 'file' | 'dir';
+  type: 'cmd' | 'file' | 'dir' | 'svc';
 }
 
 const CMD_CACHE_TTL = 5 * 60 * 1000;
 
 export function registerComplete(app: FastifyInstance, config: Config, sessions: SftpSessionCache): void {
   const cmdCacheMap = new Map<number, { list: string[]; ts: number }>();
+  const svcCacheMap = new Map<number, { list: string[]; ts: number }>();
   const homeCache = new Map<number, string>();
 
   async function getHome(hostId: number, session: SshSession): Promise<string> {
@@ -67,7 +69,7 @@ export function registerComplete(app: FastifyInstance, config: Config, sessions:
     if (!requireAuth(req, reply, config)) return;
     const q = req.query as { hostId?: string; kind?: string; prefix?: string; cwd?: string };
     const hostId = Number(q.hostId);
-    const kind = q.kind === 'cmd' ? 'cmd' : 'path';
+    const kind = q.kind === 'cmd' ? 'cmd' : q.kind === 'svc' ? 'svc' : 'path';
     const prefix = q.prefix ?? '';
     const cwd = q.cwd && q.cwd !== '' ? q.cwd : '~';
     if (!Number.isInteger(hostId) || hostId <= 0) return reply.code(400).send({ error: 'hostId 无效' });
@@ -129,6 +131,26 @@ export function registerComplete(app: FastifyInstance, config: Config, sessions:
           .filter((c) => c.startsWith(prefix))
           .slice(0, 50)
           .map((text) => ({ text, type: 'cmd' as const }));
+        return { items };
+      }
+
+      if (kind === 'svc') {
+        // systemctl 服务名补全：list-unit-files 取服务单元列表（主机维度缓存 5 分钟）
+        let cached = svcCacheMap.get(hostId);
+        if (!cached || Date.now() - cached.ts > CMD_CACHE_TTL) {
+          const r = await execCapture(
+            handle.session,
+            'systemctl list-unit-files --type=service --no-legend --no-pager 2>/dev/null | awk \'{print $1}\'',
+            5000,
+          );
+          const list = r.stdout.split('\n').map((s) => s.trim()).filter(Boolean);
+          cached = { list, ts: Date.now() };
+          svcCacheMap.set(hostId, cached);
+        }
+        const items: CompleteItem[] = cached.list
+          .filter((c) => c.startsWith(prefix))
+          .slice(0, 50)
+          .map((text) => ({ text, type: 'svc' as const }));
         return { items };
       }
 
