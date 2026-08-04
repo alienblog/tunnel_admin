@@ -1050,12 +1050,28 @@ function fmtRate(n: number): string {
 export function TransferTab() {
   const transfers = useStore((s) => s.transfers);
   const clearTransfers = useStore((s) => s.clearTransfers);
+  // 每秒刷新：进行中任务的平均速度实时更新
+  const [, setTick] = useState(0);
+  useEffect(() => {
+    const id = setInterval(() => setTick((n) => n + 1), 1000);
+    return () => clearInterval(id);
+  }, []);
+  const now = Date.now();
   const running = transfers.filter((t) => t.status === 'running');
   const done = transfers.filter((t) => t.status === 'done').slice(-50).reverse();
   const failed = transfers.filter((t) => t.status === 'error').reverse();
 
   const Row = ({ t }: { t: (typeof transfers)[number] }) => {
     const pct = t.size > 0 ? Math.min(100, Math.round((t.transferred / t.size) * 100)) : 0;
+    // 平均速度：完成 = 总大小 / 总耗时；进行中 = 已传输 / 已耗时
+    let rate = 0;
+    if (t.status === 'done' && t.doneAt) {
+      const secs = (t.doneAt - t.ts) / 1000;
+      rate = secs > 0 ? t.size / secs : t.size;
+    } else if (t.status === 'running') {
+      const secs = (now - t.ts) / 1000;
+      rate = secs > 0 ? t.transferred / secs : 0;
+    }
     return (
       <div className="rounded-sm border border-[#252526] bg-[#252526] px-3 py-2">
         <div className="flex items-center gap-2 text-[12px]">
@@ -1082,13 +1098,25 @@ export function TransferTab() {
               <div className="h-full bg-[#007acc]" style={{ width: `${pct}%` }} />
             </div>
             <span className="shrink-0 text-[10px] text-[#858585]">
-              {fmtBytes(t.transferred)} / {fmtBytes(t.size)} · {pct}%
+              {fmtBytes(t.transferred)} / {fmtBytes(t.size)} · {pct}% · {fmtRate(rate)}
             </span>
           </div>
         )}
         {t.status === 'running' && t.size === 0 && (
           <div className="mt-1 text-[10px] text-[#5a5a5a]">
-            传输中… {t.transferred > 0 ? `${fmtBytes(t.transferred)} · ${fmtRate(t.transferred / Math.max(1, (Date.now() - t.ts) / 1000))}` : ''}
+            传输中… {t.transferred > 0 ? `${fmtBytes(t.transferred)} · ${fmtRate(rate)}` : ''}
+          </div>
+        )}
+        {t.status === 'done' && (
+          <div className="mt-1 text-[10px] text-[#858585]">
+            {fmtBytes(t.size)}
+            {t.doneAt ? ` · 平均 ${fmtRate(rate)}` : ''}
+          </div>
+        )}
+        {t.status === 'error' && (
+          <div className="mt-1 text-[10px] text-[#858585]">
+            已传输 {fmtBytes(t.transferred)}
+            {t.size > 0 ? ` / ${fmtBytes(t.size)}` : ''}
           </div>
         )}
         {t.status === 'error' && t.error && <div className="mt-1 text-[10px] text-[#f14c4c]">{t.error}</div>}

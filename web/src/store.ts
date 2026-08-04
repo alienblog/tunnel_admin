@@ -30,6 +30,8 @@ export interface TransferRec {
   error?: string;
   /** 桌面端浏览器下载的本地保存路径（供「定位文件」） */
   localPath?: string;
+  /** 完成时间戳（用于计算平均速度） */
+  doneAt?: number;
   ts: number;
 }
 
@@ -388,7 +390,7 @@ interface AppState {
   toggleRightDock: () => void;
   /** 记录传输（自动分配 id，上限 100 条） */
   addTransfer: (t: Omit<TransferRec, 'id' | 'ts'>) => number;
-  updateTransfer: (id: number, patch: Partial<Pick<TransferRec, 'transferred' | 'status' | 'error' | 'size' | 'localPath'>>) => void;
+  updateTransfer: (id: number, patch: Partial<Pick<TransferRec, 'transferred' | 'status' | 'error' | 'size' | 'localPath' | 'doneAt'>>) => void;
   clearTransfers: () => void;
   setQuickCommands: (cmds: Array<{ name: string; value: string }>) => void;
   setSidebarCollapsed: (v: boolean) => void;

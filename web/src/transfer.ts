@@ -35,7 +35,7 @@ export function uploadFileXHR(
     };
     xhr.onload = () => {
       if (xhr.status === 200) {
-        useStore.getState().updateTransfer(id, { transferred: f.size, status: 'done' });
+        useStore.getState().updateTransfer(id, { transferred: f.size, status: 'done', doneAt: Date.now() });
         resolve();
         return;
       }
@@ -106,7 +106,7 @@ export async function downloadWithProgress(
     a.click();
     a.remove();
     setTimeout(() => URL.revokeObjectURL(a.href), 10000);
-    useStore.getState().updateTransfer(id, { transferred: received, size: total || received, status: 'done' });
+    useStore.getState().updateTransfer(id, { transferred: received, size: total || received, status: 'done', doneAt: Date.now() });
   } catch (err) {
     useStore.getState().updateTransfer(id, { status: 'error', error: (err as Error).message });
     throw err;
