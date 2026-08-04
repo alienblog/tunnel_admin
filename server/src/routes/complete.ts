@@ -61,12 +61,14 @@ const BASH_COMPLETE_SCRIPT = (line: string, cwd?: string): string => `LINE=${she
 source /usr/share/bash-completion/bash_completion 2>/dev/null || source /etc/bash_completion 2>/dev/null
 __ta_complete() {
   local line="$LINE"
-  cd "$CWD" 2>/dev/null
+  # ~ 展开（cd 内建对引号内 ~ 不展开，显式替换开头 ~）
+  cd "\${CWD/#\~/$HOME}" 2>/dev/null
   local -a words
   read -ra words <<< "$line"
   [ \${#words[@]} -ge 1 ] || return
   local cmd="\${words[0]}"
   local cword=$(( \${#words[@]} - 1 ))
+  local cur="\${words[$cword]}"
   _completion_loader "$cmd" 2>/dev/null
   local comp_func
   set -- $(complete -p "$cmd" 2>/dev/null)
@@ -82,7 +84,11 @@ __ta_complete() {
   COMP_POINT=\${#line}
   COMPREPLY=()
   "$comp_func" 2>/dev/null
-  printf "%s\n" "\${COMPREPLY[@]}"
+  # readline 语义：只输出以当前词为前缀的候选
+  local c
+  for c in "\${COMPREPLY[@]}"; do
+    [[ "$c" == "$cur"* ]] && printf "%s\n" "$c"
+  done
 }
 __ta_complete
 '`;
@@ -116,7 +122,10 @@ export function registerComplete(app: FastifyInstance, config: Config, sessions:
       // 优先 bash 原生补全（line 提供时）：任意命令的参数补全（systemctl/git/apt 等），
       // 通过 bash-completion 的补全函数取候选；无结果时降级到下方 kind 逻辑
       if (q.line && q.line.trim() !== '') {
-        const r = await execCapture(handle.session, BASH_COMPLETE_SCRIPT(q.line, cwd), 5000);
+        const bashCmd = BASH_COMPLETE_SCRIPT(q.line, cwd);
+        console.error('[complete] cmd:', bashCmd.replace(/\n/g, ' ').slice(0, 200));
+        const r = await execCapture(handle.session, bashCmd, 5000);
+        console.error('[complete] out:', JSON.stringify(r.stdout.slice(0, 120)), 'err:', JSON.stringify(r.stderr.slice(0, 120)));
         const seen = new Set<string>();
         const items: CompleteItem[] = r.stdout
           .split('\n')

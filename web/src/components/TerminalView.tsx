@@ -24,10 +24,12 @@ interface CompletionState {
   y: number;
 }
 
-/** 候选排序（主流体验）：精确匹配最前 → 目录优先 → 较短前缀优先 → 字母序 */
+/** 候选过滤 + 排序（主流体验）：先按当前词前缀过滤（readline 语义），再 精确匹配最前 → 目录优先 → 较短前缀优先 → 字母序 */
 function sortItems(items: CompletionItem[], prefix: string): CompletionItem[] {
   const p = prefix;
-  return [...items].sort((a, b) => {
+  return items
+    .filter((i) => i.text.startsWith(p))
+    .sort((a, b) => {
     const ae = a.text === p ? 0 : 1;
     const be = b.text === p ? 0 : 1;
     if (ae !== be) return ae - be;
@@ -35,8 +37,8 @@ function sortItems(items: CompletionItem[], prefix: string): CompletionItem[] {
     const bd = b.type === 'dir' ? 0 : 1;
     if (ad !== bd) return ad - bd;
     if (a.text.length !== b.text.length) return a.text.length - b.text.length;
-    return a.text.localeCompare(b.text);
-  });
+    return 0; // 同长保持服务端顺序（命令补全的 history 高频优先）
+    });
 }
 
 /** systemctl 服务操作子命令（这些命令的参数是服务名，按服务补全而非路径） */
