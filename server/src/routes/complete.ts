@@ -96,6 +96,7 @@ __ta_complete
 export function registerComplete(app: FastifyInstance, config: Config, sessions: SftpSessionCache): void {
   const cmdCacheMap = new Map<number, { list: string[]; ts: number }>();
   const svcCacheMap = new Map<number, { list: string[]; ts: number }>();
+  const histCacheMap = new Map<number, { list: string[]; ts: number }>();
   const homeCache = new Map<number, string>();
 
   async function getHome(hostId: number, session: SshSession): Promise<string> {
@@ -111,7 +112,7 @@ export function registerComplete(app: FastifyInstance, config: Config, sessions:
     if (!requireAuth(req, reply, config)) return;
     const q = req.query as { hostId?: string; kind?: string; prefix?: string; cwd?: string; line?: string };
     const hostId = Number(q.hostId);
-    const kind = q.kind === 'cmd' ? 'cmd' : q.kind === 'svc' ? 'svc' : 'path';
+    const kind = q.kind === 'cmd' ? 'cmd' : q.kind === 'svc' ? 'svc' : q.kind === 'hist' ? 'hist' : 'path';
     const prefix = q.prefix ?? '';
     const cwd = q.cwd && q.cwd !== '' ? q.cwd : '~';
     if (!Number.isInteger(hostId) || hostId <= 0) return reply.code(400).send({ error: 'hostId 无效' });
@@ -190,6 +191,22 @@ export function registerComplete(app: FastifyInstance, config: Config, sessions:
         const items: CompleteItem[] = cached.list
           .filter((c) => c.startsWith(prefix))
           .slice(0, 50)
+          .map((text) => ({ text, type: 'cmd' as const }));
+        return { items };
+      }
+
+      if (kind === 'hist') {
+        // 历史命令补全（幽灵补全数据源）：~/.bash_history 命令首词，缓存 5 分钟
+        let cached = histCacheMap.get(hostId);
+        if (!cached || Date.now() - cached.ts > CMD_CACHE_TTL) {
+          const r = await execCapture(handle.session, 'cat ~/.bash_history 2>/dev/null | awk \'{print $1}\' | sort -u', 4000);
+          const list = r.stdout.split('\n').map((s2) => s2.trim()).filter(Boolean);
+          cached = { list, ts: Date.now() };
+          histCacheMap.set(hostId, cached);
+        }
+        const items: CompleteItem[] = cached.list
+          .filter((c) => c.startsWith(prefix))
+          .slice(0, 8)
           .map((text) => ({ text, type: 'cmd' as const }));
         return { items };
       }
