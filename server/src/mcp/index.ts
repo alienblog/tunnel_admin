@@ -89,7 +89,7 @@ export function registerMcpPrompt(app: FastifyInstance, deps: McpDepsWithPorts):
 - 地址：${origin}/mcp
 - 认证：Bearer Token：\`${token}\`
 
-客户端配置示例（Claude Code / Cursor 的 .mcp.json）：
+客户端配置示例（Claude Code / Cursor 的 .mcp.json，omp / opencode 的 mcp 配置同样支持 http 类型）：
 
 \`\`\`json
 {
@@ -107,9 +107,17 @@ export function registerMcpPrompt(app: FastifyInstance, deps: McpDepsWithPorts):
 
 ${MCP_TOOLS.map(([name, desc]) => `- \`${name}\`：${desc}`).join('\n')}
 
+## 推荐工作流（重要：优先复用会话，避免频繁审批）
+
+1. **查会话**：先调用 \`ssh_session_info\` 查看是否已有该主机的活跃会话；
+2. **复用**：\`ssh_exec\` 等工具**始终传入 \`session\` 参数**（复用会话与记忆的工作目录），不要每次传 host 新建；
+3. **无会话时**才 \`ssh_connect\`（返回 sessionId 后复用）；连接新主机需要用户在 Web 界面批准（弹窗）；
+4. 任务完成用 \`ssh_disconnect\` 释放会话，避免堆积。
+
 ## 使用要点
 
-- 连接新主机需要用户在 Web 界面批准（弹窗），请先调用 ssh_list_hosts 查看，再 ssh_connect；
+- **审批与信任**：未信任主机的每次新建连接都需要人工批准（等待期间工具调用会挂起，超时后报错）。请在 Web 设置页 → 主机 → 编辑，把常用主机勾选为「信任」，之后连接免审批、不再出错；
+- 会话断开时工具会报「会话不存在或已断开」，此时重新 \`ssh_connect\` 即可，不要 panic；
 - 危险命令（如 rm -rf /、mkfs、shutdown 等）会被安全规则拦截或要求人工审批；
 - 需要持续跟踪日志时用 ssh_tail + ssh_tail_poll 增量读取，用完 ssh_tail_stop 停止；
 - 长任务用 ssh_exec 的 async 参数后台执行，再用 ssh_job_status 查询；

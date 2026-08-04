@@ -90,11 +90,11 @@ export function registerTools(server: McpServer, deps: McpDeps): void {
     return (db.prepare('SELECT * FROM hosts WHERE name = ?').get(hostIdOrName) as HostRow | undefined) ?? null;
   }
 
-  /** 已信任则直连，否则走人工审批 */
-  async function acquireSession(host?: string, sessionId?: string): Promise<{ session?: SshSession; error?: string }> {
+  /** 已信任则直连，否则走人工审批。未传 sessionId 新建的会话标记 ephemeral（一次性，用完自动断开） */
+  async function acquireSession(host?: string, sessionId?: string): Promise<{ session?: SshSession; error?: string; ephemeral?: boolean }> {
     if (sessionId) {
       const s = sshManager.get(sessionId);
-      return s ? { session: s } : { error: `会话不存在或已断开: ${sessionId}` };
+      return s ? { session: s, ephemeral: false } : { error: `会话不存在或已断开: ${sessionId}` };
     }
     if (!host) return { error: '需要提供 host 或 session 之一' };
     const row = resolveHost(host);
@@ -109,7 +109,7 @@ export function registerTools(server: McpServer, deps: McpDeps): void {
     try {
       const s = await sshManager.connect(row, { source: 'mcp' });
       sessionStates.set(s.id, { cwd: null });
-      return { session: s };
+      return { session: s, ephemeral: true };
     } catch (err) {
       return { error: `连接失败: ${(err as Error).message}` };
     }
@@ -292,7 +292,7 @@ export function registerTools(server: McpServer, deps: McpDeps): void {
       async: z.boolean().optional().describe('后台执行：立即返回 jobId，用 ssh_job_status 轮询结果'),
     },
     async (params) => {
-      const { session, error } = await acquireSession(params.host, params.session);
+      const { session, error, ephemeral } = await acquireSession(params.host, params.session);
       if (error || !session) return text({ error });
 
       const timeoutMs = (params.timeout ?? config.mcpDefaultTimeoutMs / 1000) * 1000;
@@ -321,9 +321,11 @@ export function registerTools(server: McpServer, deps: McpDeps): void {
         run().then(
           (result) => {
             jobs.set(jobId, { status: 'done', result });
+            if (ephemeral) sshManager.disconnect(session.id);
           },
           (err: Error) => {
             jobs.set(jobId, { status: 'done', result: { error: err.message } });
+            if (ephemeral) sshManager.disconnect(session.id);
           },
         );
         if (jobs.size > JOB_RETENTION) {
@@ -334,6 +336,8 @@ export function registerTools(server: McpServer, deps: McpDeps): void {
       }
 
       const result = await run();
+      // 一次性会话（未传 session 新建的）用完即断，避免连接堆积
+      if (ephemeral) sshManager.disconnect(session.id);
       return text({ ok: true, ...(result as object) });
     },
   );
@@ -348,7 +352,7 @@ export function registerTools(server: McpServer, deps: McpDeps): void {
       maxBytes: z.number().int().positive().max(10 * 1024 * 1024).optional().describe('最大读取字节数，默认 1MB'),
     },
     async (params) => {
-      const { session, error } = await acquireSession(params.host, params.session);
+      const { session, error, ephemeral } = await acquireSession(params.host, params.session);
       if (error || !session) return text({ error });
       try {
         const sftp = await getSftp(session);
@@ -366,6 +370,8 @@ export function registerTools(server: McpServer, deps: McpDeps): void {
         });
       } catch (err) {
         return text({ error: `读取失败: ${(err as Error).message}` });
+      } finally {
+        if (ephemeral) sshManager.disconnect(session.id);
       }
     },
   );
@@ -381,7 +387,7 @@ export function registerTools(server: McpServer, deps: McpDeps): void {
       mode: z.enum(['overwrite', 'append']).optional().describe('写入模式，默认 overwrite'),
     },
     async (params) => {
-      const { session, error } = await acquireSession(params.host, params.session);
+      const { session, error, ephemeral } = await acquireSession(params.host, params.session);
       if (error || !session) return text({ error });
       try {
         const sftp = await getSftp(session);
@@ -397,6 +403,8 @@ export function registerTools(server: McpServer, deps: McpDeps): void {
         return text({ ok: true, path: params.path, mode: params.mode ?? 'overwrite' });
       } catch (err) {
         return text({ error: `写入失败: ${(err as Error).message}` });
+      } finally {
+        if (ephemeral) sshManager.disconnect(session.id);
       }
     },
   );
@@ -410,7 +418,7 @@ export function registerTools(server: McpServer, deps: McpDeps): void {
       path: z.string().describe('远程目录绝对路径'),
     },
     async (params) => {
-      const { session, error } = await acquireSession(params.host, params.session);
+      const { session, error, ephemeral } = await acquireSession(params.host, params.session);
       if (error || !session) return text({ error });
       try {
         const sftp = await getSftp(session);
@@ -430,6 +438,8 @@ export function registerTools(server: McpServer, deps: McpDeps): void {
         return text({ ok: true, path: params.path, items });
       } catch (err) {
         return text({ error: `列目录失败: ${(err as Error).message}` });
+      } finally {
+        if (ephemeral) sshManager.disconnect(session.id);
       }
     },
   );
@@ -443,7 +453,7 @@ export function registerTools(server: McpServer, deps: McpDeps): void {
       path: z.string().describe('远程路径'),
     },
     async (params) => {
-      const { session, error } = await acquireSession(params.host, params.session);
+      const { session, error, ephemeral } = await acquireSession(params.host, params.session);
       if (error || !session) return text({ error });
       try {
         const sftp = await getSftp(session);
@@ -463,13 +473,15 @@ export function registerTools(server: McpServer, deps: McpDeps): void {
         });
       } catch (err) {
         return text({ error: `stat 失败: ${(err as Error).message}` });
+      } finally {
+        if (ephemeral) sshManager.disconnect(session.id);
       }
     },
   );
 
   server.tool(
     'ssh_session_info',
-    '列出所有活跃的 MCP SSH 会话（会话 ID、主机、工作目录）',
+    '列出所有活跃的 MCP SSH 会话（会话 ID、主机、地址、工作目录、最后使用时间）；优先复用现有会话避免重复建连',
     {},
     async () => {
       const list = sshManager
@@ -478,6 +490,8 @@ export function registerTools(server: McpServer, deps: McpDeps): void {
         .map((s) => ({
           sessionId: s.id,
           hostName: s.hostName,
+          host: s.host,
+          port: s.port,
           cwd: sessionStates.get(s.id)?.cwd ?? null,
           createdAt: new Date(s.createdAt).toISOString(),
           lastUsedAt: new Date(s.lastUsedAt).toISOString(),

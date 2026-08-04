@@ -599,7 +599,9 @@ function TerminalViewInner({ tab, rect }: { tab: TerminalTab; rect: Rect | null 
   // 避免容器未布局时以默认 80x24 创建 pty 再 resize，导致首屏提示符换行错位
   const openedRef = useRef(false);
   useEffect(() => {
-    if (rect === null || openedRef.current || tab.ended) return;
+    // rect 未布局（null 或 0 尺寸）时不发起连接：等待有效布局后再 open，
+    // 避免以 fit 保底尺寸（10x5）创建 pty/tmux，导致 TUI 程序（omp 等）显示错乱
+    if (rect === null || rect.w < 50 || rect.h < 30 || openedRef.current || tab.ended) return;
     openedRef.current = true;
     const term = termRef.current;
     if (!term) return;
