@@ -34,12 +34,26 @@ cp -r web/dist/. /tmp/ta-release/web/dist/
 cat > /tmp/ta-release/start.sh <<'EOF'
 #!/bin/sh
 cd "$(dirname "$0")"
-exec node server/dist/index.js
+# 崩溃自动重启：正常退出（exit 0，如 Ctrl+C/SIGTERM）不重启；异常退出（崩溃）2 秒后拉起
+while true; do
+  node server/dist/index.js
+  code=$?
+  if [ "$code" -eq 0 ]; then
+    exit 0
+  fi
+  echo "[tunneladmin] server exited ($code), restarting in 2s..."
+  sleep 2
+done
 EOF
 cat > /tmp/ta-release/start.bat <<'EOF'
 @echo off
 cd /d %~dp0
+:loop
 node server\dist\index.js
+if %errorlevel%==0 exit /b 0
+echo [tunneladmin] server exited (%errorlevel%), restarting in 2s...
+timeout /t 2 /nobreak >nul
+goto loop
 EOF
 cat > /tmp/ta-release/README.txt <<'EOF'
 TunnelAdmin Server

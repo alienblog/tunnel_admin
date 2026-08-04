@@ -129,19 +129,27 @@ ${MCP_TOOLS.map(([name, desc]) => `- \`${name}\`：${desc}`).join('\n')}
 /** MCP Streamable HTTP endpoint（Bearer token 认证）。可挂主 app 或独立端口实例。 */
 export function registerMcpEndpoint(app: FastifyInstance, deps: McpDeps): void {
   const handler = async (req: FastifyRequest, reply: FastifyReply): Promise<void> => {
-    if (!verifyMcpToken(deps.db, req.headers.authorization)) {
-      await reply.code(401).send({ error: '无效或缺失 MCP token' });
-      return;
+    try {
+      if (!verifyMcpToken(deps.db, req.headers.authorization)) {
+        await reply.code(401).send({ error: '无效或缺失 MCP token' });
+        return;
+      }
+      // 无状态模式：每个请求新建 Server + transport（Protocol 单实例只支持单 transport）
+      const server = new McpServer(
+        { name: 'tunneladmin', version: '0.2.6' },
+        { capabilities: { tools: {} } },
+      );
+      registerTools(server, deps);
+      const transport = new StreamableHTTPServerTransport({});
+      await server.connect(transport);
+      await transport.handleRequest(req.raw, reply.raw, req.body as Record<string, unknown> | undefined);
+    } catch (err) {
+      // 请求处理异常：记录并返回明确错误码，避免 200 空响应
+      req.log.error({ err }, 'MCP 请求处理失败');
+      if (!reply.sent) {
+        await reply.code(500).send({ error: 'MCP 内部错误', detail: (err as Error).message });
+      }
     }
-    // 无状态模式：每个请求新建 Server + transport（Protocol 单实例只支持单 transport）
-    const server = new McpServer(
-      { name: 'tunneladmin', version: '0.2.6' },
-      { capabilities: { tools: {} } },
-    );
-    registerTools(server, deps);
-    const transport = new StreamableHTTPServerTransport({});
-    await server.connect(transport);
-    await transport.handleRequest(req.raw, reply.raw, req.body as Record<string, unknown> | undefined);
   };
 
   app.post('/mcp', handler);

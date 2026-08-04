@@ -94,6 +94,14 @@ const shutdown = (): void => {
   db.close();
   app.close().then(() => process.exit(0)).catch(() => process.exit(1));
 };
+// 崩溃防护：未捕获异常记录后退出（退出码 1，start.sh 自动重启）；未处理 rejection 记录（避免静默丢错）
+process.on('uncaughtException', (err) => {
+  console.error('[fatal] uncaughtException:', err);
+  process.exit(1);
+});
+process.on('unhandledRejection', (reason) => {
+  console.error('[fatal] unhandledRejection:', reason);
+});
 process.on('SIGINT', shutdown);
 process.on('SIGTERM', shutdown);
 

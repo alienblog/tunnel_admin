@@ -74,6 +74,8 @@ interface ExecResult {
   stdout: string;
   stderr: string;
   exitCode: number;
+  /** 进程被信号终止时的信号名（exitCode 为 -1 时提供） */
+  signal?: string;
   timedOut: boolean;
   durationMs: number;
 }
@@ -81,24 +83,38 @@ interface ExecResult {
 export function registerTools(server: McpServer, deps: McpDeps): void {
   const { config, db, sshManager, approvals } = deps;
 
-  function resolveHost(hostIdOrName: string): HostRow | null {
+  /** 会话是否仍活跃（客户端未关闭） */
+  function isAlive(s: SshSession): boolean {
+    return (s.client as unknown as { _state?: string })._state !== 'closed' && (s.client as unknown as { _state?: string })._state !== 'closing';
+  }
+
+  /** 该主机已有的活跃 MCP 会话（优先复用，避免重复建连） */
+  function findExistingSession(row: HostRow): SshSession | undefined {
+    return sshManager.list().find((s) => s.source === 'mcp' && s.hostId === row.id && isAlive(s));
+  }
+
+  function resolveHost(hostIdOrName: string | number): HostRow | null {
     const id = Number(hostIdOrName);
     if (Number.isInteger(id) && id > 0) {
       const row = db.prepare('SELECT * FROM hosts WHERE id = ?').get(id) as HostRow | undefined;
       if (row) return row;
     }
-    return (db.prepare('SELECT * FROM hosts WHERE name = ?').get(hostIdOrName) as HostRow | undefined) ?? null;
+    return (db.prepare('SELECT * FROM hosts WHERE name = ?').get(String(hostIdOrName)) as HostRow | undefined) ?? null;
   }
 
-  /** 已信任则直连，否则走人工审批。未传 sessionId 新建的会话标记 ephemeral（一次性，用完自动断开） */
-  async function acquireSession(host?: string, sessionId?: string): Promise<{ session?: SshSession; error?: string; ephemeral?: boolean }> {
+  /** 已信任则直连，否则走人工审批。未传 sessionId 时：先复用该主机活跃会话，无则新建（ephemeral 一次性，用完自动断开） */
+  async function acquireSession(host?: string | number, sessionId?: string): Promise<{ session?: SshSession; error?: string; ephemeral?: boolean }> {
     if (sessionId) {
       const s = sshManager.get(sessionId);
       return s ? { session: s, ephemeral: false } : { error: `会话不存在或已断开: ${sessionId}` };
     }
-    if (!host) return { error: '需要提供 host 或 session 之一' };
+    if (host === undefined) return { error: '需要提供 host 或 session 之一' };
     const row = resolveHost(host);
     if (!row) return { error: `主机不存在: ${host}` };
+
+    // 复用该主机已有活跃会话（不再每次新建连接）
+    const existing = findExistingSession(row);
+    if (existing) return { session: existing, ephemeral: false };
 
     if (!row.trusted) {
       const result = await approvals.requestApproval(row, 'mcp');
@@ -175,7 +191,7 @@ export function registerTools(server: McpServer, deps: McpDeps): void {
           channel.close();
         }, opts.timeoutMs);
 
-        channel.on('close', (code: number | null) => {
+        channel.on('close', (code: number | null, signal?: string) => {
           clearTimeout(timer);
           if (opts.cwd !== undefined) sessionStates.set(session.id, { cwd: opts.cwd });
           const exitCode = code ?? -1;
@@ -193,7 +209,14 @@ export function registerTools(server: McpServer, deps: McpDeps): void {
             exitCode,
             status,
           });
-          resolve({ stdout, stderr, exitCode, timedOut, durationMs: Date.now() - t0 });
+          resolve({
+            stdout,
+            stderr,
+            exitCode,
+            signal: exitCode === -1 && signal ? signal : undefined,
+            timedOut,
+            durationMs: Date.now() - t0,
+          });
         });
       });
     }
@@ -256,13 +279,18 @@ export function registerTools(server: McpServer, deps: McpDeps): void {
 
   server.tool(
     'ssh_connect',
-    '建立 SSH 连接会话。首次连接某台主机需要用户在 Web 界面批准（有弹窗提示），批准后可返回 sessionId 供后续工具复用',
+    '建立 SSH 连接会话。首次连接某台主机需要用户在 Web 界面批准（有弹窗提示），批准后可返回 sessionId 供后续工具复用；同一主机已有活跃会话时直接返回该会话（reused: true），不重复建连',
     {
-      host: z.string().describe('主机 ID 或名称'),
+      host: z.union([z.string(), z.number()]).describe('主机 ID 或名称，参数名固定为 host（如 1 或 "LocalRK"，不要用 host_id）'),
     },
     async ({ host }) => {
       const row = resolveHost(host);
-      if (!row) return text({ error: `主机不存在: ${host}` });
+      if (!row) return text({ error: `主机不存在: ${host}（参数为 host：主机 ID 或名称）` });
+      // 同名主机已有活跃会话：直接复用
+      const existing = findExistingSession(row);
+      if (existing) {
+        return text({ ok: true, sessionId: existing.id, hostName: row.name, host: row.host, reused: true });
+      }
       if (!row.trusted) {
         const result = await approvals.requestApproval(row, 'mcp');
         if (result.status !== 'approved') {
@@ -283,7 +311,7 @@ export function registerTools(server: McpServer, deps: McpDeps): void {
     'ssh_exec',
     '在远程主机执行命令并返回 stdout/stderr/退出码。未指定 session 时自动新建一次性连接（同样需要审批）。指定 session 时复用连接与记忆的工作目录。超时或输出超限会被截断',
     {
-      host: z.string().optional().describe('主机 ID 或名称（session 未指定时必填）'),
+      host: z.union([z.string(), z.number()]).optional().describe('主机 ID 或名称（session 未指定时必填）'),
       session: z.string().optional().describe('ssh_connect 返回的会话 ID'),
       command: z.string().describe('要执行的命令'),
       cwd: z.string().optional().describe('工作目录；指定后会被会话记住'),
@@ -344,30 +372,47 @@ export function registerTools(server: McpServer, deps: McpDeps): void {
 
   server.tool(
     'ssh_read_file',
-    '读取远程文件内容（文本）。大文件可用 maxBytes 限制读取量',
+    '读取远程文件内容。默认文本；encoding=base64 时返回 base64（可传输二进制）。大文件用 offset/limit 分块读取（按字节偏移），与 encoding=base64 配合可完整传输任意大小文件',
     {
-      host: z.string().optional(),
+      host: z.union([z.string(), z.number()]).optional(),
       session: z.string().optional(),
       path: z.string().describe('远程文件绝对路径'),
-      maxBytes: z.number().int().positive().max(10 * 1024 * 1024).optional().describe('最大读取字节数，默认 1MB'),
+      encoding: z.enum(['text', 'base64']).optional().describe('返回编码：text（UTF-8 文本，默认）/ base64（二进制安全）'),
+      offset: z.number().int().nonnegative().optional().describe('起始字节偏移（分块读取用），默认 0'),
+      limit: z.number().int().positive().max(50 * 1024 * 1024).optional().describe('本次最多读取的字节数，默认 1MB'),
     },
     async (params) => {
       const { session, error, ephemeral } = await acquireSession(params.host, params.session);
       if (error || !session) return text({ error });
       try {
         const sftp = await getSftp(session);
-        const maxBytes = params.maxBytes ?? 1024 * 1024;
-        const { promise, resolve, reject } = Promise.withResolvers<string>();
-        sftp.readFile(params.path, { encoding: 'utf8' }, (err, data) => (err ? reject(err) : resolve(String(data))));
-        const content = await promise;
-        const truncated = content.length > maxBytes;
-        return text({
-          ok: true,
-          path: params.path,
-          truncated,
-          byteLength: Buffer.byteLength(content),
-          content: truncated ? content.slice(0, maxBytes) : content,
-        });
+        const encoding = params.encoding ?? 'text';
+        const limit = params.limit ?? 1024 * 1024;
+        const offset = params.offset ?? 0;
+        // 按偏移打开并定位读取（sftp.open + read），避免全量读后再截断
+        const { promise: openP, resolve: openRes, reject: openRej } = Promise.withResolvers<Buffer>();
+        sftp.open(params.path, 'r', (err, fd) => (err ? openRej(err) : openRes(fd)));
+        const fd = await openP;
+        try {
+          const buf = Buffer.alloc(limit);
+          const { promise: readP, resolve: readRes, reject: readRej } = Promise.withResolvers<number>();
+          sftp.read(fd, buf, 0, limit, offset, (err, bytesRead) => (err ? readRej(err) : readRes(bytesRead)));
+          const bytesRead = await readP;
+          const data = bytesRead > 0 ? buf.subarray(0, bytesRead) : Buffer.alloc(0);
+          return text({
+            ok: true,
+            path: params.path,
+            encoding,
+            offset,
+            byteLength: data.length,
+            truncated: bytesRead === limit,
+            content: encoding === 'base64' ? data.toString('base64') : data.toString('utf8'),
+          });
+        } finally {
+          const { promise: closeP, resolve: closeRes } = Promise.withResolvers<void>();
+          sftp.close(fd, () => closeRes());
+          await closeP;
+        }
       } catch (err) {
         return text({ error: `读取失败: ${(err as Error).message}` });
       } finally {
@@ -378,12 +423,13 @@ export function registerTools(server: McpServer, deps: McpDeps): void {
 
   server.tool(
     'ssh_write_file',
-    '写入远程文件。默认覆盖，可追加。内容为文本字符串',
+    '写入远程文件。content 按字面文本写入（默认）；encoding=base64 时 content 为 base64 字符串，服务器解码后写入（与 ssh_read_file 的 base64 返回对称，可写二进制）',
     {
-      host: z.string().optional(),
+      host: z.union([z.string(), z.number()]).optional(),
       session: z.string().optional(),
       path: z.string().describe('远程文件绝对路径'),
-      content: z.string().describe('文件内容'),
+      content: z.string().describe('文件内容（encoding=base64 时为 base64 编码）'),
+      encoding: z.enum(['text', 'base64']).optional().describe('content 编码：text（默认，按字面写入）/ base64（解码后写入）'),
       mode: z.enum(['overwrite', 'append']).optional().describe('写入模式，默认 overwrite'),
     },
     async (params) => {
@@ -391,16 +437,17 @@ export function registerTools(server: McpServer, deps: McpDeps): void {
       if (error || !session) return text({ error });
       try {
         const sftp = await getSftp(session);
+        const data = params.encoding === 'base64' ? Buffer.from(params.content, 'base64') : Buffer.from(params.content, 'utf8');
         if (params.mode === 'append') {
           const { promise, resolve, reject } = Promise.withResolvers<void>();
-          sftp.appendFile(params.path, params.content, (err) => (err ? reject(err) : resolve()));
+          sftp.appendFile(params.path, data, (err) => (err ? reject(err) : resolve()));
           await promise;
         } else {
           const { promise, resolve, reject } = Promise.withResolvers<void>();
-          sftp.writeFile(params.path, params.content, (err) => (err ? reject(err) : resolve()));
+          sftp.writeFile(params.path, data, (err) => (err ? reject(err) : resolve()));
           await promise;
         }
-        return text({ ok: true, path: params.path, mode: params.mode ?? 'overwrite' });
+        return text({ ok: true, path: params.path, mode: params.mode ?? 'overwrite', byteLength: data.length });
       } catch (err) {
         return text({ error: `写入失败: ${(err as Error).message}` });
       } finally {
@@ -481,17 +528,17 @@ export function registerTools(server: McpServer, deps: McpDeps): void {
 
   server.tool(
     'ssh_session_info',
-    '列出所有活跃的 MCP SSH 会话（会话 ID、主机、地址、工作目录、最后使用时间）；优先复用现有会话避免重复建连',
+    '列出服务器管理的全部活跃 SSH 会话（会话 ID、主机、地址、来源 web/mcp、工作目录、最后使用时间）；优先复用现有会话避免重复建连',
     {},
     async () => {
       const list = sshManager
         .list()
-        .filter((s) => s.source === 'mcp')
         .map((s) => ({
           sessionId: s.id,
           hostName: s.hostName,
           host: s.host,
           port: s.port,
+          source: s.source,
           cwd: sessionStates.get(s.id)?.cwd ?? null,
           createdAt: new Date(s.createdAt).toISOString(),
           lastUsedAt: new Date(s.lastUsedAt).toISOString(),
