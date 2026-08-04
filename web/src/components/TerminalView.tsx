@@ -24,6 +24,21 @@ interface CompletionState {
   y: number;
 }
 
+/** 候选排序（主流体验）：精确匹配最前 → 目录优先 → 较短前缀优先 → 字母序 */
+function sortItems(items: CompletionItem[], prefix: string): CompletionItem[] {
+  const p = prefix;
+  return [...items].sort((a, b) => {
+    const ae = a.text === p ? 0 : 1;
+    const be = b.text === p ? 0 : 1;
+    if (ae !== be) return ae - be;
+    const ad = a.type === 'dir' ? 0 : 1;
+    const bd = b.type === 'dir' ? 0 : 1;
+    if (ad !== bd) return ad - bd;
+    if (a.text.length !== b.text.length) return a.text.length - b.text.length;
+    return a.text.localeCompare(b.text);
+  });
+}
+
 /** systemctl 服务操作子命令（这些命令的参数是服务名，按服务补全而非路径） */
 const SYSTEMCTL_ACTIONS = new Set([
   'start', 'stop', 'restart', 'status', 'enable', 'disable', 'reload', 'restart', 'mask', 'unmask',
@@ -162,12 +177,13 @@ function TerminalViewInner({ tab, rect }: { tab: TerminalTab; rect: Rect | null 
     const seq = ++completeSeqRef.current;
     // 优先服务端 bash 原生补全（任意命令参数），无结果降级到本地上下文（cmd/path/svc）
     let items: CompletionItem[] | null = null;
+    const sort = (list: CompletionItem[]): CompletionItem[] => sortItems(list, ctx.prefix);
     try {
       const r = await api<{ items: CompletionItem[] }>(
         `/api/complete?hostId=${tab.hostId}&line=${encodeURIComponent(buf)}&cwd=${encodeURIComponent(cwdRef.current ?? '~')}`,
       );
       if (seq !== completeSeqRef.current) return;
-      items = r.items;
+      items = sort(r.items);
     } catch {
       items = null;
     }
@@ -177,7 +193,7 @@ function TerminalViewInner({ tab, rect }: { tab: TerminalTab; rect: Rect | null 
           `/api/complete?hostId=${tab.hostId}&kind=${ctx.kind}&prefix=${encodeURIComponent(ctx.prefix)}&cwd=${encodeURIComponent(cwdRef.current ?? '~')}`,
         );
         if (seq !== completeSeqRef.current || r.items.length === 0) return;
-        items = r.items;
+        items = sort(r.items);
       } catch {
         closeGhost();
         return;
@@ -324,8 +340,8 @@ function TerminalViewInner({ tab, rect }: { tab: TerminalTab; rect: Rect | null 
           closeCompletion();
           return;
         }
-        closeCompletion();
-        // 继续作为普通输入处理
+        // 普通字符/退格：不关闭列表，继续作为普通输入处理（发送到 shell + 更新缓冲），
+        // scheduleAuto 会按新前缀重新请求补全，列表实时过滤（主流 SSH 工具行为）
       }
 
       // 方向键右键：应用幽灵补全（无 ghost 时正常移动光标）
