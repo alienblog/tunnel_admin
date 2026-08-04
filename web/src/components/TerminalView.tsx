@@ -103,12 +103,37 @@ function TerminalViewInner({ tab, rect }: { tab: TerminalTab; rect: Rect | null 
     setCompletion(null);
   };
 
+  /** 幽灵补全（VSCode 式）：最佳匹配灰色显示在光标后，方向键右键应用 */
+  const [ghost, setGhost] = useState<{ text: string } | null>(null);
+  const ghostRef = useRef<{ text: string } | null>(null);
+  const closeGhost = (): void => {
+    if (ghostRef.current) {
+      ghostRef.current = null;
+      setGhost(null);
+    }
+  };
+
+  /** 应用幽灵补全（发送 suffix 到 shell + 更新输入缓冲） */
+  const applyGhost = (): void => {
+    const g = ghostRef.current;
+    if (!g || g.text === '') return;
+    const suffix = g.text;
+    if (streamIdRef.current) {
+      ws.send({ type: 'terminal:input', streamId: streamIdRef.current, data: suffix });
+    }
+    const cur = cursorRef.current;
+    cmdBufRef.current = cmdBufRef.current.slice(0, cur) + suffix + cmdBufRef.current.slice(cur);
+    cursorRef.current = cur + suffix.length;
+    closeGhost();
+  };
+
   const requestCompletion = async (force: boolean): Promise<void> => {
     const buf = cmdBufRef.current;
     const cur = cursorRef.current;
     const ctx = getCompletionContext(buf, cur);
-    if (!ctx || (!force && !ctx.force)) {
+    if (!ctx) {
       closeCompletion();
+      closeGhost();
       return;
     }
     const seq = ++completeSeqRef.current;
@@ -117,24 +142,41 @@ function TerminalViewInner({ tab, rect }: { tab: TerminalTab; rect: Rect | null 
         `/api/complete?hostId=${tab.hostId}&kind=${ctx.kind}&prefix=${encodeURIComponent(ctx.prefix)}&cwd=${encodeURIComponent(cwdRef.current ?? '~')}`,
       );
       if (seq !== completeSeqRef.current || r.items.length === 0) return;
-      const term = termRef.current;
-      if (!term) return;
-      // 光标位置 → 像素
-      const dims = (term as unknown as { _core?: { _renderService?: { dimensions?: { actualCellWidth: number; actualCellHeight: number } } } })._core?._renderService?.dimensions;
-      const cellW = dims?.actualCellWidth ?? 8;
-      const cellH = dims?.actualCellHeight ?? 13;
-      const state: CompletionState = {
-        items: r.items,
-        selected: 0,
-        kind: ctx.kind,
-        prefix: ctx.prefix,
-        x: Math.round(term.buffer.active.cursorX * cellW),
-        y: Math.round(term.buffer.active.cursorY * cellH),
-      };
-      completionRef.current = state;
-      setCompletion(state);
+      if (force || completionRef.current) {
+        // Tab 强制 / 列表已打开：弹出选择列表
+        const term = termRef.current;
+        if (!term) return;
+        closeGhost();
+        // 光标位置 → 像素
+        const dims = (term as unknown as { _core?: { _renderService?: { dimensions?: { actualCellWidth: number; actualCellHeight: number } } } })._core?._renderService?.dimensions;
+        const cellW = dims?.actualCellWidth ?? 8;
+        const cellH = dims?.actualCellHeight ?? 13;
+        const state: CompletionState = {
+          items: r.items,
+          selected: 0,
+          kind: ctx.kind,
+          prefix: ctx.prefix,
+          x: Math.round(term.buffer.active.cursorX * cellW),
+          y: Math.round(term.buffer.active.cursorY * cellH),
+        };
+        completionRef.current = state;
+        setCompletion(state);
+      } else {
+        // 自动模式：最佳匹配灰色显示（幽灵文本），不实际输入
+        const item = r.items[0];
+        let suffix = item.text.slice(ctx.prefix.length);
+        if (ctx.kind === 'path' && item.type === 'dir' && !item.text.endsWith('/')) {
+          suffix += '/';
+        }
+        if (suffix !== '') {
+          ghostRef.current = { text: suffix };
+          setGhost({ text: suffix });
+        } else {
+          closeGhost();
+        }
+      }
     } catch {
-      // 补全失败静默
+      closeGhost();
     }
   };
 
@@ -243,7 +285,19 @@ function TerminalViewInner({ tab, rect }: { tab: TerminalTab; rect: Rect | null 
         // 继续作为普通输入处理
       }
 
-      // Tab：触发补全（不发送到 shell）
+      // 方向键右键：应用幽灵补全（无 ghost 时正常移动光标）
+      if (d === '\x1b[C') {
+        if (ghostRef.current) {
+          applyGhost();
+          return;
+        }
+        cursorRef.current = Math.min(cmdBufRef.current.length, cursorRef.current + 1);
+        return;
+      }
+      // 其他输入：清除旧 ghost（120ms 后自动生成新的）
+      closeGhost();
+
+      // Tab：触发补全列表（不发送到 shell）
       if (d === '\t') {
         void requestCompletion(true);
         return;
@@ -308,8 +362,6 @@ function TerminalViewInner({ tab, rect }: { tab: TerminalTab; rect: Rect | null 
         cursorRef.current = cmdBufRef.current.length;
       } else if (d === '\x1b[D') {
         cursorRef.current = Math.max(0, cursorRef.current - 1);
-      } else if (d === '\x1b[C') {
-        cursorRef.current = Math.min(cmdBufRef.current.length, cursorRef.current + 1);
       } else if (d === '\x1b[A' || d === '\x1b[B') {
         // 历史命令：缓冲失效
         cmdBufRef.current = '';
@@ -364,6 +416,8 @@ function TerminalViewInner({ tab, rect }: { tab: TerminalTab; rect: Rect | null 
     const offData = ws.on('terminal:data', (e) => {
       if (e.streamId !== streamIdRef.current) return;
       term.write(e.data);
+      // shell 输出（含输入回显）到达：幽灵补全失效（位置/上下文已变）
+      closeGhost();
       // 录制：记录相对时间戳（供回放）
       const rec = recordingRef.current;
       rec.push({ t: Date.now(), data: e.data });
@@ -699,6 +753,24 @@ function TerminalViewInner({ tab, rect }: { tab: TerminalTab; rect: Rect | null 
           </button>
         </div>
       )}
+
+      {/* 幽灵补全（VSCode 式）：最佳匹配灰色显示在光标后，方向键右键应用 */}
+      {ghost && (() => {
+        const term = termRef.current;
+        const dims = (term as unknown as { _core?: { _renderService?: { dimensions?: { actualCellWidth: number; actualCellHeight: number } } } })._core?._renderService?.dimensions;
+        const cellW = dims?.actualCellWidth ?? 8;
+        const cellH = dims?.actualCellHeight ?? 13;
+        const cx = term?.buffer.active.cursorX ?? 0;
+        const cy = term?.buffer.active.cursorY ?? 0;
+        return (
+          <span
+            className="pointer-events-none absolute z-40 font-mono text-[13px] whitespace-pre text-[#6a6a6a]/70"
+            style={{ left: Math.round(cx * cellW), top: Math.round(cy * cellH) }}
+          >
+            {ghost.text}
+          </span>
+        );
+      })()}
 
       {/* 补全浮层 */}
       {completion && (
