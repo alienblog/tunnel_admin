@@ -296,6 +296,23 @@ function TerminalViewInner({ tab, rect }: { tab: TerminalTab; rect: Rect | null 
     termRef.current = term;
     fitRef.current = fit;
 
+    // 滚轮：普通终端滚动视口（浏览历史输出）；TUI（alternate screen）转发方向键。
+    // 显式接管，避免 wheel 被当作输入历史（readline 上翻）或浏览器页面滚动。
+    term.attachCustomWheelEventHandler(() => false); // 关闭 xterm 默认 wheel 处理，由下方自定义处理
+    const onWheel = (ev: WheelEvent): void => {
+      ev.preventDefault();
+      const isAlt = term.buffer.active.type === 'alternate';
+      if (isAlt) {
+        if (streamIdRef.current) {
+          ws.send({ type: 'terminal:input', streamId: streamIdRef.current, data: ev.deltaY < 0 ? '\x1b[A' : '\x1b[B' });
+        }
+        return;
+      }
+      // 普通终端：滚动视口（每格约 3 行，与常见终端一致）
+      term.scrollLines(ev.deltaY < 0 ? -3 : 3);
+    };
+    container.addEventListener('wheel', onWheel, { passive: false });
+
     try {
       fit.fit();
     } catch {
@@ -616,6 +633,7 @@ function TerminalViewInner({ tab, rect }: { tab: TerminalTab; rect: Rect | null 
 
     return () => {
       ro.disconnect();
+      container.removeEventListener('wheel', onWheel);
       window.removeEventListener('ta:ws:open', onWsOpen);
       onData.dispose();
       onResize.dispose();
