@@ -9,6 +9,7 @@ import type { SftpSessionCache } from './sftpSession.js';
  * - cmd：compgen -c 命令表（主机维度缓存 5 分钟）
  * - path：cd cwd && compgen -f/-d 实时查询
  * - svc：systemctl list-unit-files 服务名（主机维度缓存 5 分钟）
+ * - line：bash 原生补全（bash-completion 补全函数，任意命令参数；无结果降级到 kind 逻辑）
  * 非 bash 环境自动降级（PATH 扫描 / ls 通配）。
  */
 
@@ -51,6 +52,41 @@ export interface CompleteItem {
 
 const CMD_CACHE_TTL = 5 * 60 * 1000;
 
+/**
+ * bash 原生补全脚本：source bash-completion → 懒加载命令补全函数 →
+ * 设置 COMP_* 环境调用补全函数，输出候选（每行一个）。
+ * line 用 shellQuote 包裹后作为参数传入（脚本内 read -ra 按空格分词，不做引号解析，避免注入）。
+ */
+const BASH_COMPLETE_SCRIPT = (line: string, cwd?: string): string => `LINE=${shellQuote(line)} CWD=${shellQuote(cwd ?? '~')} bash -c '
+source /usr/share/bash-completion/bash_completion 2>/dev/null || source /etc/bash_completion 2>/dev/null
+__ta_complete() {
+  local line="$LINE"
+  cd "$CWD" 2>/dev/null
+  local -a words
+  read -ra words <<< "$line"
+  [ \${#words[@]} -ge 1 ] || return
+  local cmd="\${words[0]}"
+  local cword=$(( \${#words[@]} - 1 ))
+  _completion_loader "$cmd" 2>/dev/null
+  local comp_func
+  set -- $(complete -p "$cmd" 2>/dev/null)
+  comp_func=""
+  while [ $# -gt 0 ]; do
+    if [ "$1" = "-F" ]; then comp_func="$2"; break; fi
+    shift
+  done
+  [ -n "$comp_func" ] || return
+  COMP_WORDS=("\${words[@]}")
+  COMP_CWORD=\${cword}
+  COMP_LINE="$line"
+  COMP_POINT=\${#line}
+  COMPREPLY=()
+  "$comp_func" 2>/dev/null
+  printf "%s\n" "\${COMPREPLY[@]}"
+}
+__ta_complete
+'`;
+
 export function registerComplete(app: FastifyInstance, config: Config, sessions: SftpSessionCache): void {
   const cmdCacheMap = new Map<number, { list: string[]; ts: number }>();
   const svcCacheMap = new Map<number, { list: string[]; ts: number }>();
@@ -67,7 +103,7 @@ export function registerComplete(app: FastifyInstance, config: Config, sessions:
 
   app.get('/api/complete', async (req, reply) => {
     if (!requireAuth(req, reply, config)) return;
-    const q = req.query as { hostId?: string; kind?: string; prefix?: string; cwd?: string };
+    const q = req.query as { hostId?: string; kind?: string; prefix?: string; cwd?: string; line?: string };
     const hostId = Number(q.hostId);
     const kind = q.kind === 'cmd' ? 'cmd' : q.kind === 'svc' ? 'svc' : 'path';
     const prefix = q.prefix ?? '';
@@ -77,6 +113,21 @@ export function registerComplete(app: FastifyInstance, config: Config, sessions:
     if (error || !handle) return reply.code(400).send({ error: error ?? '无法建立连接' });
 
     try {
+      // 优先 bash 原生补全（line 提供时）：任意命令的参数补全（systemctl/git/apt 等），
+      // 通过 bash-completion 的补全函数取候选；无结果时降级到下方 kind 逻辑
+      if (q.line && q.line.trim() !== '') {
+        const r = await execCapture(handle.session, BASH_COMPLETE_SCRIPT(q.line, cwd), 5000);
+        const seen = new Set<string>();
+        const items: CompleteItem[] = r.stdout
+          .split('\n')
+          .map((t) => t.trimEnd())
+          .filter((t) => t !== '' && t !== '__TA_ERR__' && !seen.has(t) && seen.add(t))
+          .slice(0, 50)
+          .map((text) => ({ text, type: text.endsWith('/') ? ('dir' as const) : ('file' as const) }));
+        if (items.length > 0) return { items };
+        // 空结果：bash-completion 未注册该命令（如 apt），降级到 kind 逻辑
+      }
+
       if (kind === 'cmd') {
         // 命令表：compgen -c 全量 + ~/.bash_history 常用优先（缓存）
         let cached = cmdCacheMap.get(hostId);

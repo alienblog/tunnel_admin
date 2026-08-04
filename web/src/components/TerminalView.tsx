@@ -153,63 +153,78 @@ function TerminalViewInner({ tab, rect }: { tab: TerminalTab; rect: Rect | null 
       closeGhost();
       return;
     }
-    // 空前缀（如 systemctl restart <空格>）仅 Tab 强制触发，自动模式抑制（避免输入空格弹全部服务）
+    // 空前缀（如 systemctl restart <空格>）仅 Tab 强制触发，自动模式抑制（避免输入空格弹全部候选）
     if (!force && ctx.prefix === '') {
       closeCompletion();
       closeGhost();
       return;
     }
     const seq = ++completeSeqRef.current;
+    // 优先服务端 bash 原生补全（任意命令参数），无结果降级到本地上下文（cmd/path/svc）
+    let items: CompletionItem[] | null = null;
     try {
       const r = await api<{ items: CompletionItem[] }>(
-        `/api/complete?hostId=${tab.hostId}&kind=${ctx.kind}&prefix=${encodeURIComponent(ctx.prefix)}&cwd=${encodeURIComponent(cwdRef.current ?? '~')}`,
+        `/api/complete?hostId=${tab.hostId}&line=${encodeURIComponent(buf)}&cwd=${encodeURIComponent(cwdRef.current ?? '~')}`,
       );
-      if (seq !== completeSeqRef.current || r.items.length === 0) return;
-      if (force && r.items.length === 1 && !completionRef.current) {
-        // Tab 且唯一候选：直接补全（bash 式），不弹列表
+      if (seq !== completeSeqRef.current) return;
+      items = r.items;
+    } catch {
+      items = null;
+    }
+    if (items === null || items.length === 0) {
+      try {
+        const r = await api<{ items: CompletionItem[] }>(
+          `/api/complete?hostId=${tab.hostId}&kind=${ctx.kind}&prefix=${encodeURIComponent(ctx.prefix)}&cwd=${encodeURIComponent(cwdRef.current ?? '~')}`,
+        );
+        if (seq !== completeSeqRef.current || r.items.length === 0) return;
+        items = r.items;
+      } catch {
         closeGhost();
-        const item = r.items[0];
-        let suffix = item.text.slice(ctx.prefix.length);
-        if (ctx.kind === 'path' && item.type === 'dir' && !item.text.endsWith('/')) {
-          suffix += '/';
-        }
-        applySuffix(suffix);
         return;
       }
-      if (force || completionRef.current) {
-        closeGhost();
-        // 光标位置 → 像素
-        const term = termRef.current;
-        if (!term) return;
-        const dims = (term as unknown as { _core?: { _renderService?: { dimensions?: { actualCellWidth: number; actualCellHeight: number } } } })._core?._renderService?.dimensions;
-        const cellW = dims?.actualCellWidth ?? 8;
-        const cellH = dims?.actualCellHeight ?? 13;
-        const state: CompletionState = {
-          items: r.items,
-          selected: 0,
-          kind: ctx.kind,
-          prefix: ctx.prefix,
-          x: Math.round(term.buffer.active.cursorX * cellW),
-          y: Math.round(term.buffer.active.cursorY * cellH),
-        };
-        completionRef.current = state;
-        setCompletion(state);
-      } else {
-        // 自动模式：最佳匹配灰色显示（幽灵文本），不实际输入
-        const item = r.items[0];
-        let suffix = item.text.slice(ctx.prefix.length);
-        if (ctx.kind === 'path' && item.type === 'dir' && !item.text.endsWith('/')) {
-          suffix += '/';
-        }
-        if (suffix !== '') {
-          ghostRef.current = { text: suffix };
-          setGhost({ text: suffix });
-        } else {
-          closeGhost();
-        }
-      }
-    } catch {
+    }
+    if (force && items.length === 1 && !completionRef.current) {
+      // Tab 且唯一候选：直接补全（bash 式），不弹列表
       closeGhost();
+      const item = items[0];
+      let suffix = item.text.slice(ctx.prefix.length);
+      if (ctx.kind === 'path' && item.type === 'dir' && !item.text.endsWith('/')) {
+        suffix += '/';
+      }
+      applySuffix(suffix);
+      return;
+    }
+    if (force || completionRef.current) {
+      closeGhost();
+      // 光标位置 → 像素
+      const term = termRef.current;
+      if (!term) return;
+      const dims = (term as unknown as { _core?: { _renderService?: { dimensions?: { actualCellWidth: number; actualCellHeight: number } } } })._core?._renderService?.dimensions;
+      const cellW = dims?.actualCellWidth ?? 8;
+      const cellH = dims?.actualCellHeight ?? 13;
+      const state: CompletionState = {
+        items,
+        selected: 0,
+        kind: ctx.kind,
+        prefix: ctx.prefix,
+        x: Math.round(term.buffer.active.cursorX * cellW),
+        y: Math.round(term.buffer.active.cursorY * cellH),
+      };
+      completionRef.current = state;
+      setCompletion(state);
+    } else {
+      // 自动模式：最佳匹配灰色显示（幽灵文本），不实际输入
+      const item = items[0];
+      let suffix = item.text.slice(ctx.prefix.length);
+      if (ctx.kind === 'path' && item.type === 'dir' && !item.text.endsWith('/')) {
+        suffix += '/';
+      }
+      if (suffix !== '') {
+        ghostRef.current = { text: suffix };
+        setGhost({ text: suffix });
+      } else {
+        closeGhost();
+      }
     }
   };
 
