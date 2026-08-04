@@ -36,26 +36,15 @@ export function registerWs(app: FastifyInstance, config: Config, manager: SshMan
    * tmux 不可用时降级为普通 shell。
    */
   function openShell(session: SshSession, cols: number, rows: number, tmuxId?: string): Promise<Channel> {
-    const { promise, resolve, reject } = Promise.withResolvers<Channel>();
-    const tmuxName = tmuxId ? `ta-${tmuxId.replace(/[^a-zA-Z0-9_-]/g, '')}` : null;
-    if (tmuxName) {
-      const cmd = [
-        `if command -v tmux >/dev/null 2>&1; then`,
-        `  tmux attach-session -t ${tmuxName} 2>/dev/null ||`,
-        `  (tmux new-session -d -s ${tmuxName} -x ${cols} -y ${rows} && tmux attach-session -t ${tmuxName});`,
-        `else exec ${process.env.SHELL ?? 'bash'} -l; fi`,
-      ].join(' ');
-      session.client.exec(cmd, { pty: { term: 'xterm-256color', cols, rows } }, (err, stream) => {
-        if (err) reject(err);
-        else resolve(stream);
-      });
-    } else {
+    // 不使用远端 tmux 包装（tmux 会捕获滚轮/鼠标，且嵌套 TUI 有兼容问题）。
+    // 直接打开交互 shell；重连时由前端重新发起 open（新 shell，xterm 历史保留显示）。
+    void tmuxId;
+    return new Promise((resolve, reject) => {
       session.client.shell({ term: 'xterm-256color', cols, rows }, (err, stream) => {
         if (err) reject(err);
         else resolve(stream);
       });
-    }
-    return promise;
+    });
   }
 
   app.get('/ws', { websocket: true }, (socket, req) => {
