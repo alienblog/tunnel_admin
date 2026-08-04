@@ -117,14 +117,19 @@ function TerminalViewInner({ tab, rect }: { tab: TerminalTab; rect: Rect | null 
   const applyGhost = (): void => {
     const g = ghostRef.current;
     if (!g || g.text === '') return;
-    const suffix = g.text;
+    applySuffix(g.text);
+    closeGhost();
+  };
+
+  /** 应用补全 suffix：发送到 shell + 更新输入缓冲 */
+  const applySuffix = (suffix: string): void => {
+    if (suffix === '') return;
     if (streamIdRef.current) {
       ws.send({ type: 'terminal:input', streamId: streamIdRef.current, data: suffix });
     }
     const cur = cursorRef.current;
     cmdBufRef.current = cmdBufRef.current.slice(0, cur) + suffix + cmdBufRef.current.slice(cur);
     cursorRef.current = cur + suffix.length;
-    closeGhost();
   };
 
   const requestCompletion = async (force: boolean): Promise<void> => {
@@ -142,12 +147,22 @@ function TerminalViewInner({ tab, rect }: { tab: TerminalTab; rect: Rect | null 
         `/api/complete?hostId=${tab.hostId}&kind=${ctx.kind}&prefix=${encodeURIComponent(ctx.prefix)}&cwd=${encodeURIComponent(cwdRef.current ?? '~')}`,
       );
       if (seq !== completeSeqRef.current || r.items.length === 0) return;
+      if (force && r.items.length === 1 && !completionRef.current) {
+        // Tab 且唯一候选：直接补全（bash 式），不弹列表
+        closeGhost();
+        const item = r.items[0];
+        let suffix = item.text.slice(ctx.prefix.length);
+        if (ctx.kind === 'path' && item.type === 'dir' && !item.text.endsWith('/')) {
+          suffix += '/';
+        }
+        applySuffix(suffix);
+        return;
+      }
       if (force || completionRef.current) {
-        // Tab 强制 / 列表已打开：弹出选择列表
-        const term = termRef.current;
-        if (!term) return;
         closeGhost();
         // 光标位置 → 像素
+        const term = termRef.current;
+        if (!term) return;
         const dims = (term as unknown as { _core?: { _renderService?: { dimensions?: { actualCellWidth: number; actualCellHeight: number } } } })._core?._renderService?.dimensions;
         const cellW = dims?.actualCellWidth ?? 8;
         const cellH = dims?.actualCellHeight ?? 13;
@@ -192,12 +207,7 @@ function TerminalViewInner({ tab, rect }: { tab: TerminalTab; rect: Rect | null 
       closeCompletion();
       return;
     }
-    if (streamIdRef.current) {
-      ws.send({ type: 'terminal:input', streamId: streamIdRef.current, data: suffix });
-    }
-    const cur = cursorRef.current;
-    cmdBufRef.current = cmdBufRef.current.slice(0, cur) + suffix + cmdBufRef.current.slice(cur);
-    cursorRef.current = cur + suffix.length;
+    applySuffix(suffix);
     closeCompletion();
   };
 
