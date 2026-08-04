@@ -839,23 +839,27 @@ function TerminalViewInner({ tab, rect }: { tab: TerminalTab; rect: Rect | null 
         );
       })()}
 
-      {/* 补全浮层 */}
+      {/* 补全浮层（半透明，优先光标下方、绝不遮当前输入行） */}
       {completion && (
         <div
-          className="absolute z-50 w-72 overflow-hidden rounded-sm border border-[#3c3c3c] bg-[#252526] shadow-2xl"
+          className="absolute z-50 w-72 overflow-hidden rounded-sm border border-[#3c3c3c]/70 bg-[#252526]/90 shadow-2xl backdrop-blur-sm"
           style={(() => {
-            // VSCode 式：优先在光标下方弹出（不遮当前输入行）；下方空间不足时收窄高度，
-            // 只有完全放不下才弹到上方（底部对齐光标行上方，尽量不遮输入内容）
+            // 优先在光标行下方弹出（留一行间距，不遮当前输入行）；
+            // 下方空间不足时收窄高度；完全放不下才弹到上方（底部对齐光标行上方，仍留间距）
             const elH = termRef.current?.element?.clientHeight ?? 0;
-            const below = elH - (completion.y + 13);
+            const gap = 6;
+            const below = elH - (completion.y + 13 + gap);
             const listMaxH = Math.min(224, Math.max(48, below - 44));
-            const top = below >= 54 ? completion.y + 13 : Math.max(0, completion.y - listMaxH - 44);
+            const totalH = listMaxH + 44;
+            const top = below >= 56 ? completion.y + 13 + gap : Math.max(0, completion.y - totalH - gap);
             return { left: Math.min(completion.x, 200), top };
           })()}
         >
           <div
             className="overflow-y-auto py-0.5"
-            style={{ maxHeight: Math.min(224, Math.max(48, (termRef.current?.element?.clientHeight ?? 0) - (completion.y + 13) - 44)) }}
+            style={{
+              maxHeight: Math.min(224, Math.max(48, (termRef.current?.element?.clientHeight ?? 0) - (completion.y + 13 + 6) - 44)),
+            }}
           >
             {completion.items.map((it, i) => (
               <div
@@ -884,7 +888,7 @@ function TerminalViewInner({ tab, rect }: { tab: TerminalTab; rect: Rect | null 
               </div>
             ))}
           </div>
-          <div className="border-t border-[#3c3c3c] bg-[#1e1e1e] px-3 py-0.5 text-[10px] text-[#5a5a5a]">
+          <div className="border-t border-[#3c3c3c]/70 bg-[#1e1e1e]/90 px-3 py-0.5 text-[10px] text-[#5a5a5a]">
             ↑↓ 选择 · Enter 确认 · Esc 关闭
           </div>
         </div>
