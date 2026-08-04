@@ -358,9 +358,13 @@ function TerminalViewInner({ tab, rect }: { tab: TerminalTab; rect: Rect | null 
       // 其他输入：清除旧 ghost（120ms 后自动生成新的）
       closeGhost();
 
-      // Tab：触发补全列表（不发送到 shell）
+      // Tab：发送到远端 shell，由 bash readline 原生补全（主流 SSH 工具行为）。
+      // bash 补全会直接改写终端行（唯一候选补全/多候选打印），前端不做下拉候选。
+      // 补全后 shell 行与前端缓冲不再同步，清空缓冲（后续输入重新积累）。
       if (d === '\t') {
-        void requestCompletion(true);
+        cmdBufRef.current = '';
+        cursorRef.current = 0;
+        if (streamIdRef.current) ws.send({ type: 'terminal:input', streamId: streamIdRef.current, data: '\t' });
         return;
       }
 
