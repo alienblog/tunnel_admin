@@ -51,27 +51,60 @@ function HostRow({ host, onActivate, onEdit, onContextMenu }: { host: Host; onAc
   );
 }
 
-/** 主机树（终端视图）：点击开终端 */
+/** 主机树（终端视图）：点击开终端，分组树状可折叠 */
 function HostTree({ onEdit, onContextMenu }: { onEdit: (h: Host) => void; onContextMenu: (e: React.MouseEvent, h: Host) => void }) {
   const hosts = useStore((s) => s.hosts);
   const addTab = useStore((s) => s.addTab);
   const grouped = useMemo(() => groupHosts(hosts), [hosts]);
+  // 分组折叠状态（与主机视图共享 localStorage key）
+  const [collapsedGroups, setCollapsedGroups] = useState<Record<string, boolean>>(() => {
+    try {
+      return JSON.parse(localStorage.getItem('ta-collapsed-groups') ?? '{}') as Record<string, boolean>;
+    } catch {
+      return {};
+    }
+  });
+  const toggleGroup = (g: string): void => {
+    setCollapsedGroups((prev) => {
+      const next = { ...prev, [g]: !prev[g] };
+      try {
+        localStorage.setItem('ta-collapsed-groups', JSON.stringify(next));
+      } catch {
+        // 忽略存储失败
+      }
+      return next;
+    });
+  };
   return (
     <>
-      {grouped.map((g) => (
-        <div key={g.group}>
-          <div className="flex items-center gap-1 px-2 py-[3px] text-[11px] text-[#858585]">
-            <svg viewBox="0 0 16 16" className="h-3 w-3" fill="currentColor">
-              <path d="M1 3.5A1.5 1.5 0 012.5 2h3.086c.398 0 .78.158 1.061.44l.914.914H13.5A1.5 1.5 0 0115 4.854v7.146a1.5 1.5 0 01-1.5 1.5h-11A1.5 1.5 0 011 12V3.5z" />
-            </svg>
-            {g.group}
-            <span className="ml-auto pr-1 text-[10px] text-[#5a5a5a]">{g.hosts.length}</span>
+      {grouped.map((g) => {
+        const isCollapsed = !!collapsedGroups[g.group];
+        return (
+          <div key={g.group}>
+            <div
+              className="flex cursor-pointer items-center gap-1.5 rounded-sm px-2 py-1.5 text-[13px] font-semibold text-[#cccccc] hover:bg-[#2a2d2e]"
+              onClick={() => toggleGroup(g.group)}
+              title={isCollapsed ? `展开分组 ${g.group}` : `折叠分组 ${g.group}`}
+            >
+              <span className={`w-3 shrink-0 text-[10px] text-[#858585] transition-transform ${isCollapsed ? '' : 'rotate-90'}`}>
+                ▶
+              </span>
+              <svg viewBox="0 0 16 16" className="h-3.5 w-3.5 shrink-0 text-[#d7ba7d]" fill="currentColor">
+                <path d="M1 3.5A1.5 1.5 0 012.5 2h3.086c.398 0 .78.158 1.061.44l.914.914H13.5A1.5 1.5 0 0115 4.854v7.146a1.5 1.5 0 01-1.5 1.5h-11A1.5 1.5 0 011 12V3.5z" />
+              </svg>
+              <span className="min-w-0 flex-1 truncate">{g.group}</span>
+              <span className="shrink-0 text-[10px] font-normal text-[#5a5a5a]">{g.hosts.length}</span>
+            </div>
+            {!isCollapsed && (
+              <div className="flex flex-col gap-px pb-1 pl-4">
+                {g.hosts.map((h) => (
+                  <HostRow key={h.id} host={h} onActivate={() => addTab(h)} onEdit={() => onEdit(h)} onContextMenu={onContextMenu} />
+                ))}
+              </div>
+            )}
           </div>
-          {g.hosts.map((h) => (
-            <HostRow key={h.id} host={h} onActivate={() => addTab(h)} onEdit={() => onEdit(h)} onContextMenu={onContextMenu} />
-          ))}
-        </div>
-      ))}
+        );
+      })}
       {hosts.length === 0 && <div className="px-3 py-2 text-[12px] text-[#5a5a5a]">暂无主机，请到主机视图添加</div>}
     </>
   );
