@@ -161,14 +161,6 @@ function TerminalViewInner({ tab, rect }: { tab: TerminalTab; rect: Rect | null 
     cursorRef.current = cur + suffix.length;
   };
 
-  /** 本会话输入历史（Enter 时记录，幽灵补全优先匹配最近输入） */
-  const historyRef = useRef<string[]>([]);
-  const recordHistory = (cmd: string): void => {
-    const c = cmd.trim();
-    if (!c) return;
-    historyRef.current = [c, ...historyRef.current.filter((h) => h !== c)].slice(0, 100);
-  };
-
   const requestCompletion = async (force: boolean): Promise<void> => {
     const buf = cmdBufRef.current;
     const cur = cursorRef.current;
@@ -185,37 +177,7 @@ function TerminalViewInner({ tab, rect }: { tab: TerminalTab; rect: Rect | null 
       return;
     }
     const seq = ++completeSeqRef.current;
-    // 自动模式（ghost）：只用历史命令数据源（本会话输入 + 远端 bash_history），快速且贴合习惯
-    if (!force) {
-      try {
-        const local = historyRef.current.filter((h) => h.startsWith(buf));
-        let items: CompletionItem[] | null = null;
-        if (local.length > 0) {
-          items = local.map((text) => ({ text, type: 'cmd' as const }));
-        } else {
-          const r = await api<{ items: CompletionItem[] }>(
-            `/api/complete?hostId=${tab.hostId}&kind=hist&prefix=${encodeURIComponent(buf)}&cwd=${encodeURIComponent(cwdRef.current ?? '~')}`,
-          );
-          if (seq !== completeSeqRef.current) return;
-          items = r.items;
-        }
-        const item = items?.[0];
-        if (item) {
-          const suffix = item.text.slice(buf.length);
-          if (suffix !== '') {
-            ghostRef.current = { text: suffix };
-            setGhost({ text: suffix });
-            return;
-          }
-        }
-        closeGhost();
-        return;
-      } catch {
-        closeGhost();
-        return;
-      }
-    }
-    // Tab：bash 原生补全（完整候选列表，只作参考）
+    // 优先服务端 bash 原生补全（任意命令参数），无结果降级到本地上下文（cmd/path/svc）
     let items: CompletionItem[] | null = null;
     const sort = (list: CompletionItem[]): CompletionItem[] => sortItems(list, ctx.prefix);
     try {
@@ -396,10 +358,13 @@ function TerminalViewInner({ tab, rect }: { tab: TerminalTab; rect: Rect | null 
       // 其他输入：清除旧 ghost（120ms 后自动生成新的）
       closeGhost();
 
-      // Tab：触发补全（bash 数据源，候选在当前行下方弹出列表，不打断输入行；
-      // 唯一候选直接补全，多候选下拉选择）
+      // Tab：发送到远端 shell，由 bash readline 原生补全（主流 SSH 工具行为）。
+      // bash 补全会直接改写终端行（唯一候选补全/多候选打印），前端不做下拉候选。
+      // 补全后 shell 行与前端缓冲不再同步，清空缓冲（后续输入重新积累）。
       if (d === '\t') {
-        void requestCompletion(true);
+        cmdBufRef.current = '';
+        cursorRef.current = 0;
+        if (streamIdRef.current) ws.send({ type: 'terminal:input', streamId: streamIdRef.current, data: '\t' });
         return;
       }
 
@@ -416,7 +381,6 @@ function TerminalViewInner({ tab, rect }: { tab: TerminalTab; rect: Rect | null 
         // 视口在顶部（如 clear 后）输入时滚回底部，避免看不到提示符
         if (term.buffer.active.viewportY === 0) term.scrollToBottom();
         parseEnterCommand();
-        recordHistory(cmdBufRef.current);
         // pwd 命令检测：回车时若缓冲的命令行为 pwd，等待输出中的路径行
         if (cmdBufRef.current.trim() === 'pwd') {
           pwdPendingRef.current = true;
@@ -878,35 +842,35 @@ function TerminalViewInner({ tab, rect }: { tab: TerminalTab; rect: Rect | null 
         );
       })()}
 
-      {/* 补全浮层（只作输入参考：高透明、不可点击、无滚动条、最多 8 项） */}
+      {/* 补全浮层 */}
       {completion && (
         <div
-          className="pointer-events-none absolute z-50 w-72 overflow-hidden rounded-sm border border-[#3c3c3c]/50 bg-[#252526]/70 shadow-2xl"
+          className="absolute z-50 w-72 overflow-hidden rounded-sm border border-[#3c3c3c] bg-[#252526] shadow-2xl"
           style={(() => {
-            // 优先在光标行下方弹出（下移约三行，完全不遮当前输入行）；
-            // 下方空间不足时收窄高度；完全放不下才弹到上方（仍留间距）
+            // VSCode 式：优先在光标下方弹出（不遮当前输入行）；下方空间不足时收窄高度，
+            // 只有完全放不下才弹到上方（底部对齐光标行上方，尽量不遮输入内容）
             const elH = termRef.current?.element?.clientHeight ?? 0;
-            const gap = 43;
-            const below = elH - (completion.y + 13 + gap);
-            const listMaxH = Math.min(150, Math.max(48, below - 44));
-            const totalH = listMaxH + 44;
-            const top = below >= 56 ? completion.y + 13 + gap : Math.max(0, completion.y - totalH - gap);
+            const below = elH - (completion.y + 13);
+            const listMaxH = Math.min(224, Math.max(48, below - 44));
+            const top = below >= 54 ? completion.y + 13 : Math.max(0, completion.y - listMaxH - 44);
             return { left: Math.min(completion.x, 200), top };
           })()}
         >
           <div
             className="overflow-y-auto py-0.5"
-            style={{
-              maxHeight: Math.min(150, Math.max(48, (termRef.current?.element?.clientHeight ?? 0) - (completion.y + 13 + 43) - 44)),
-              scrollbarWidth: 'none',
-            }}
+            style={{ maxHeight: Math.min(224, Math.max(48, (termRef.current?.element?.clientHeight ?? 0) - (completion.y + 13) - 44)) }}
           >
-            {completion.items.slice(0, 8).map((it, i) => (
+            {completion.items.map((it, i) => (
               <div
                 key={it.text + i}
-                className={`flex items-center gap-2 px-3 py-1 text-[12px] ${
-                  i === completion.selected ? 'bg-[#094771]/60 text-white' : 'text-[#cccccc]'
+                className={`flex cursor-pointer items-center gap-2 px-3 py-1 text-[12px] ${
+                  i === completion.selected ? 'bg-[#094771] text-white' : 'text-[#cccccc] hover:bg-[#2a2d2e]'
                 }`}
+                onMouseEnter={() => {
+                  completionRef.current = { ...completion, selected: i };
+                  setCompletion(completionRef.current);
+                }}
+                onClick={applyCompletion}
               >
                 <span className="w-4 shrink-0 text-center">
                   {it.type === 'dir' ? (
@@ -923,8 +887,8 @@ function TerminalViewInner({ tab, rect }: { tab: TerminalTab; rect: Rect | null 
               </div>
             ))}
           </div>
-          <div className="border-t border-[#3c3c3c]/50 bg-[#1e1e1e]/70 px-3 py-0.5 text-[10px] text-[#5a5a5a]">
-            ↑↓ 选择 · Enter 应用 · Esc 关闭
+          <div className="border-t border-[#3c3c3c] bg-[#1e1e1e] px-3 py-0.5 text-[10px] text-[#5a5a5a]">
+            ↑↓ 选择 · Enter 确认 · Esc 关闭
           </div>
         </div>
       )}
