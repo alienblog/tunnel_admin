@@ -304,6 +304,7 @@ function SftpSideBar() {
   const setSftp = useStore((s) => s.setSftp);
   const tabs = useStore((s) => s.tabs);
   const activeTabId = useStore((s) => s.activeTabId);
+  const pushToast = useStore((s) => s.pushToast);
   // 跟随当前活动终端 tab 的主机（VSCode 文件管理器跟随编辑器）
   const activeTab = tabs.find((t) => t.id === activeTabId) ?? null;
   const hostId = activeTab ? String(activeTab.hostId) : '';
@@ -970,6 +971,17 @@ function SftpSideBar() {
               🗜 打包下载 (tar)
             </button>
           )}
+          <button
+            className={menuItemCls}
+            onClick={() => {
+              const p = joinPath(ctx.parentPath, ctx.item.name);
+              void navigator.clipboard.writeText(p);
+              pushToast({ hostName: '文件', kind: 'success', text: `已复制路径：${p}` });
+              setCtx(null);
+            }}
+          >
+            🔗 复制路径
+          </button>
           <button className={menuItemCls} onClick={() => copyItem(ctx.item, ctx.parentPath)}>
             📋 复制
           </button>
