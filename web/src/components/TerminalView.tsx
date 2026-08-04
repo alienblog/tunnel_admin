@@ -756,16 +756,19 @@ function TerminalViewInner({ tab, rect }: { tab: TerminalTab; rect: Rect | null 
 
       {/* 幽灵补全（VSCode 式）：最佳匹配灰色显示在光标后，方向键右键应用 */}
       {ghost && (() => {
-        const term = termRef.current;
-        const dims = (term as unknown as { _core?: { _renderService?: { dimensions?: { actualCellWidth: number; actualCellHeight: number } } } })._core?._renderService?.dimensions;
-        const cellW = dims?.actualCellWidth ?? 8;
-        const cellH = dims?.actualCellHeight ?? 13;
-        const cx = term?.buffer.active.cursorX ?? 0;
-        const cy = term?.buffer.active.cursorY ?? 0;
+        // 位置跟随 xterm 光标 DOM（helper textarea 由 xterm 定位在光标单元格），
+        // 任何滚动/缓冲/换行场景下都与输入对齐
+        const container = containerRef.current;
+        const ta = container?.querySelector('.xterm-helper-textarea');
+        const tr = ta ? ta.getBoundingClientRect() : null;
+        const cr = container ? container.getBoundingClientRect() : null;
+        if (!tr || !cr) return null;
+        const left = tr.left - cr.left + (tr.width || 0);
+        const top = tr.top - cr.top;
         return (
           <span
             className="pointer-events-none absolute z-40 font-mono text-[13px] whitespace-pre text-[#6a6a6a]/70"
-            style={{ left: Math.round(cx * cellW), top: Math.round(cy * cellH) }}
+            style={{ left: Math.round(left), top: Math.round(top) }}
           >
             {ghost.text}
           </span>

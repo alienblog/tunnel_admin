@@ -8,22 +8,31 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 
-const sessionDir = path.join(os.homedir(), '.omp', 'agent', 'sessions', '-sources-tunneladmin');
+const sessionRoot = path.join(os.homedir(), '.omp', 'agent', 'sessions');
 const root = path.join(__dirname, '..');
 const ZH = path.join(root, 'README.md');
 const EN = path.join(root, 'readme_en.md');
 
-if (!fs.existsSync(sessionDir)) {
-  console.error(`未找到会话目录: ${sessionDir}`);
+// 会话目录两种命名：旧 `-sources-tunneladmin` / 新 `home-tunneladmin-<hash>`，都存在时合并统计
+const sessionDirs = [];
+for (const d of fs.readdirSync(sessionRoot)) {
+  if (d === '-sources-tunneladmin' || d.startsWith('home-tunneladmin-')) {
+    sessionDirs.push(path.join(sessionRoot, d));
+  }
+}
+if (sessionDirs.length === 0) {
+  console.error(`未找到会话目录（${sessionRoot} 下无 tunneladmin 会话）`);
   process.exit(1);
 }
 
 // ---- 统计 ----
-const files = fs.readdirSync(sessionDir).filter(f => f.endsWith('.jsonl')).sort();
+const files = sessionDirs
+  .flatMap((dir) => fs.readdirSync(dir).filter((f) => f.endsWith('.jsonl')).map((f) => path.join(dir, f)))
+  .sort();
 const sessions = [];
 for (const f of files) {
   let input = 0, output = 0, cache = 0, cost = 0, first = null, last = null;
-  const lines = fs.readFileSync(path.join(sessionDir, f), 'utf8').split('\n');
+  const lines = fs.readFileSync(f, 'utf8').split('\n');
   for (const line of lines) {
     if (!line.trim()) continue;
     let ev;
@@ -40,7 +49,7 @@ for (const f of files) {
   if (input + output + cache === 0) continue; // 空会话
   const short = ts => ts.slice(5, 10);
   sessions.push({
-    file: f,
+    file: f.split(path.sep).pop(),
     first: first ? short(first) : f.slice(0, 10).replace(/-/g, '').slice(2) + '-' + f.slice(4, 6) + '-' + f.slice(6, 8),
     last: last ? short(last) : '?',
     input, output, cache, cost,
