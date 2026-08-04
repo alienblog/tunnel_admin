@@ -1,7 +1,7 @@
 {
   "name": "tunneladmin",
   "private": true,
-  "version": "0.2.4",
+  "version": "0.2.5",
   "description": "Web SSH 连接管理器 + MCP server",
   "workspaces": [
     "server",
@@ -45,6 +45,7 @@
     "files": [
       "build/icon.png",
       "desktop/main.js",
+      "desktop/preload.js",
       "desktop/server-launch.js",
       "server/dist/**",
       "server/package.json",
