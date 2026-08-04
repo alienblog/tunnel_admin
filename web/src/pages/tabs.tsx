@@ -315,7 +315,8 @@ function McpSettings() {
   const [ruleAction, setRuleAction] = useState<'block' | 'approve'>('block');
   const [ruleNote, setRuleNote] = useState('');
   const [copying, setCopying] = useState(false);
-  const [mcpUrl, setMcpUrl] = useState('');
+  const mcpUrl = useStore((s) => s.mcpUrl);
+  const setMcpUrl = useStore((s) => s.setMcpUrl);
   /** 待选择令牌（多个令牌时弹选择行） */
   const [promptPick, setPromptPick] = useState(false);
   /** MCP 端口配置 */

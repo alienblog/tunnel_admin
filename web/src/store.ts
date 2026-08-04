@@ -338,6 +338,8 @@ interface AppState {
   alertThresholds: { cpu: number; mem: number; disk: number };
   /** 终端主题名 */
   terminalTheme: string;
+  /** MCP 服务地址（状态栏/设置页共用；'' = 未加载，用主服务端口） */
+  mcpUrl: string;
   toasts: Toast[];
   sftp: SftpState;
   hostModal: HostModalState;
@@ -418,6 +420,7 @@ interface AppState {
   setMetrics: (m: HostMetrics | null) => void;
   setAlertThresholds: (t: { cpu: number; mem: number; disk: number }) => void;
   setTerminalTheme: (t: string) => void;
+  setMcpUrl: (u: string) => void;
   /** 工作区持久化：布局/tab 存 localStorage（刷新后恢复，配合 tmux 恢复会话现场） */
   saveWorkspace: () => void;
   restoreWorkspace: () => void;
@@ -515,6 +518,7 @@ export const useStore = create<AppState>((set, get) => ({
   metrics: null,
   alertThresholds: { cpu: 90, mem: 90, disk: 90 },
   terminalTheme: 'dark-plus',
+  mcpUrl: '',
   toasts: [],
   sftp: { hostId: '', path: '/', selectedPath: null, revealPath: null },
   hostModal: { open: false, editing: null },
@@ -923,6 +927,7 @@ export const useStore = create<AppState>((set, get) => ({
   setMetrics: (metrics) => set({ metrics }),
   setAlertThresholds: (alertThresholds) => set({ alertThresholds }),
   setTerminalTheme: (terminalTheme) => set({ terminalTheme }),
+  setMcpUrl: (mcpUrl) => set({ mcpUrl }),
 
   saveWorkspace: () => {
     const { tabs, hostLayouts } = get();

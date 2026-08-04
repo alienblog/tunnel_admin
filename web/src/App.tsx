@@ -386,10 +386,16 @@ function StatusBar() {
       <div className="flex min-w-0 items-center gap-1.5 whitespace-nowrap">
         <MetricsBar />
       </div>
-      <span className="hidden whitespace-nowrap md:inline">MCP: {location.origin}/mcp</span>
+      <StatusMcp />
       <span className="whitespace-nowrap">v0.2.5</span>
     </div>
   );
+}
+
+/** 状态栏 MCP 地址：优先显示独立 MCP 端口地址（保存后自动更新），未加载时回退主服务端口 */
+function StatusMcp() {
+  const mcpUrl = useStore((s) => s.mcpUrl);
+  return <span className="hidden whitespace-nowrap md:inline">MCP: {mcpUrl || `${location.origin}/mcp`}</span>;
 }
 
 export default function App() {
@@ -409,6 +415,10 @@ export default function App() {
           useStore.getState().setAuthed(true);
           ws.connect();
           void useStore.getState().loadHosts();
+          // MCP 地址（状态栏显示；独立端口时来自 /api/mcp/info）
+          void api<{ url: string }>('/api/mcp/info')
+            .then((i) => useStore.getState().setMcpUrl(i.url))
+            .catch(() => {});
           // 初始同步：活跃会话列表（刷新页面后恢复 agent 会话 tab）
           void api<SessionInfo[]>('/api/sessions').then((list) => {
             const st = useStore.getState();
