@@ -161,7 +161,7 @@ function TerminalViewInner({ tab, rect }: { tab: TerminalTab; rect: Rect | null 
 
   const scheduleAuto = (): void => {
     clearTimeout(autoTimerRef.current);
-    autoTimerRef.current = window.setTimeout(() => void requestCompletion(false), 200);
+    autoTimerRef.current = window.setTimeout(() => void requestCompletion(false), 120);
   };
 
   const parseEnterCommand = (): void => {
@@ -282,6 +282,30 @@ function TerminalViewInner({ tab, rect }: { tab: TerminalTab; rect: Rect | null 
           cursorRef.current = cur - 1;
         }
         scheduleAuto();
+      } else if (d === '\x03') {
+        // Ctrl+C：shell 中断清行，同步输入缓冲（避免补全上下文残留）
+        cmdBufRef.current = '';
+        cursorRef.current = 0;
+        closeCompletion();
+      } else if (d === '\x15') {
+        // Ctrl+U：删除光标前所有字符（readline）
+        cmdBufRef.current = cmdBufRef.current.slice(cursorRef.current);
+        cursorRef.current = 0;
+        scheduleAuto();
+      } else if (d === '\x17') {
+        // Ctrl+W：删除光标前一个词（readline）
+        const cur = cursorRef.current;
+        const after = cmdBufRef.current.slice(cur);
+        const trimmed = cmdBufRef.current.slice(0, cur).replace(/\S+\s*$/, '');
+        cmdBufRef.current = trimmed + after;
+        cursorRef.current = trimmed.length;
+        scheduleAuto();
+      } else if (d === '\x01') {
+        // Ctrl+A：光标到行首
+        cursorRef.current = 0;
+      } else if (d === '\x05') {
+        // Ctrl+E：光标到行尾
+        cursorRef.current = cmdBufRef.current.length;
       } else if (d === '\x1b[D') {
         cursorRef.current = Math.max(0, cursorRef.current - 1);
       } else if (d === '\x1b[C') {
@@ -394,6 +418,13 @@ function TerminalViewInner({ tab, rect }: { tab: TerminalTab; rect: Rect | null 
       setConnBadge({ kind: 'connected', text: wasReconnect ? '已重连' : '已连接' });
       window.clearTimeout(badgeTimerRef.current);
       badgeTimerRef.current = window.setTimeout(() => setConnBadge(null), 2000);
+      // 尺寸对齐：open 可能发生在容器未布局时（默认 80x24），ready 后按实际尺寸重发一次，
+      // 让 shell/tmux 收到 SIGWINCH 重绘（修复「$ 下一行」/首屏显示错乱）
+      window.setTimeout(() => {
+        if (streamIdRef.current !== e.streamId) return;
+        const term = termRef.current;
+        if (term) ws.send({ type: 'terminal:resize', streamId: e.streamId, cols: term.cols, rows: term.rows });
+      }, 50);
     });
     const offError = ws.on('terminal:error', (e) => {
       if (e.reqId !== undefined && e.reqId !== tab.id) return;
@@ -462,22 +493,7 @@ function TerminalViewInner({ tab, rect }: { tab: TerminalTab; rect: Rect | null 
       setConnBadge({ kind: 'closed', text: '会话已结束 · 只读视图' });
     }
 
-    // 发起连接：web 终端新建会话；agent 会话附加到 MCP 会话
-    if (isAgent && tab.sessionId && !tab.ended) {
-      setConnBadge({ kind: 'connecting', text: '附加会话中…' });
-      ws.send({ type: 'terminal:attach', reqId: tab.id, sessionId: tab.sessionId, cols: term.cols, rows: term.rows });
-    } else if (!isAgent) {
-      // 持久会话：tmuxId = tab.id（重连 attach 恢复现场）
-      setConnBadge({ kind: 'connecting', text: '连接中…' });
-      ws.send({
-        type: 'terminal:open',
-        reqId: tab.id,
-        hostId: tab.hostId,
-        cols: term.cols,
-        rows: term.rows,
-        tmuxId: tab.id,
-      });
-    }
+    // 发起连接由下方 rect effect 负责（布局就绪且 fit 成功后发送，避免默认 80x24 首屏导致提示符错位）
 
     return () => {
       ro.disconnect();
@@ -515,6 +531,37 @@ function TerminalViewInner({ tab, rect }: { tab: TerminalTab; rect: Rect | null 
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tab.id, tab.hostId, tab.sessionId, isAgent]);
 
+  // 发起连接：布局就绪（rect 非空）且 fit 成功后才发送 open/attach，
+  // 避免容器未布局时以默认 80x24 创建 pty 再 resize，导致首屏提示符换行错位
+  const openedRef = useRef(false);
+  useEffect(() => {
+    if (rect === null || openedRef.current || tab.ended) return;
+    openedRef.current = true;
+    const term = termRef.current;
+    if (!term) return;
+    try {
+      fitRef.current?.fit();
+    } catch {
+      // 容器尚未布局完成时忽略（ResizeObserver 会补发）
+    }
+    if (isAgent && tab.sessionId) {
+      setConnBadge({ kind: 'connecting', text: '附加会话中…' });
+      ws.send({ type: 'terminal:attach', reqId: tab.id, sessionId: tab.sessionId, cols: term.cols, rows: term.rows });
+    } else if (!isAgent) {
+      // 持久会话：tmuxId = tab.id（重连 attach 恢复现场）
+      setConnBadge({ kind: 'connecting', text: '连接中…' });
+      ws.send({
+        type: 'terminal:open',
+        reqId: tab.id,
+        hostId: tab.hostId,
+        cols: term.cols,
+        rows: term.rows,
+        tmuxId: tab.id,
+      });
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [rect, tab.id, tab.hostId, tab.sessionId, isAgent]);
+
   // 会话结束后转为只读：禁止 stdin，并提示
   useEffect(() => {
     if (!termRef.current) return;
@@ -546,7 +593,32 @@ function TerminalViewInner({ tab, rect }: { tab: TerminalTab; rect: Rect | null 
 
   return (
     <div className="relative group" style={rect ? { position: 'absolute', left: rect.x, top: rect.y, width: rect.w, height: rect.h } : { display: 'none' }}>
-      <div ref={containerRef} className="h-full w-full" />
+      <div
+        ref={containerRef}
+        className="h-full w-full"
+        onContextMenu={(e) => {
+          // PowerShell 式右键：选中文本 → 复制；未选中 → 粘贴（多行由 onData 二次确认）
+          e.preventDefault();
+          const term = termRef.current;
+          if (!term) return;
+          const sel = term.getSelection();
+          if (sel) {
+            void navigator.clipboard.writeText(sel);
+            term.clearSelection();
+            pushToast({ hostName: tab.hostName, kind: 'success', text: `已复制选中文本（${sel.length} 字符）` });
+            return;
+          }
+          void navigator.clipboard
+            .readText()
+            .then((text) => {
+              if (!text) return;
+              term.paste(text);
+            })
+            .catch(() => {
+              // 剪贴板读取失败（无权限）静默
+            });
+        }}
+      />
       {/* 连接状态徽标（不写入终端文本；connected 2s 淡出，error/closed 常驻） */}
       {connBadge && (
         <div
@@ -632,15 +704,20 @@ function TerminalViewInner({ tab, rect }: { tab: TerminalTab; rect: Rect | null 
       {completion && (
         <div
           className="absolute z-50 w-72 overflow-hidden rounded-sm border border-[#3c3c3c] bg-[#252526] shadow-2xl"
-          style={{
-            left: Math.min(completion.x, 200),
-            top:
-              completion.y + 13 > (termRef.current?.element?.clientHeight ?? 0) - 220
-                ? completion.y - 220
-                : completion.y + 13,
-          }}
+          style={(() => {
+            // VSCode 式：优先在光标下方弹出（不遮当前输入行）；下方空间不足时收窄高度，
+            // 只有完全放不下才弹到上方（底部对齐光标行上方，尽量不遮输入内容）
+            const elH = termRef.current?.element?.clientHeight ?? 0;
+            const below = elH - (completion.y + 13);
+            const listMaxH = Math.min(224, Math.max(48, below - 44));
+            const top = below >= 54 ? completion.y + 13 : Math.max(0, completion.y - listMaxH - 44);
+            return { left: Math.min(completion.x, 200), top };
+          })()}
         >
-          <div className="max-h-56 overflow-y-auto py-0.5">
+          <div
+            className="overflow-y-auto py-0.5"
+            style={{ maxHeight: Math.min(224, Math.max(48, (termRef.current?.element?.clientHeight ?? 0) - (completion.y + 13) - 44)) }}
+          >
             {completion.items.map((it, i) => (
               <div
                 key={it.text + i}

@@ -59,6 +59,10 @@ if (!gotLock) {
   });
 
   app.whenReady().then(async () => {
+    // 剪贴板权限：右键复制/粘贴（navigator.clipboard.readText/writeText）需要
+    session.defaultSession.setPermissionRequestHandler((_wc, permission, callback) => {
+      callback(permission === 'clipboard-read' || permission === 'clipboard-sanitized-write');
+    });
     // ---- 下载管理器：预fs（userData/download-prefs.json）+ IPC ----------------
     // 下载模式：ask（每次下载前选目录，批量 5 秒窗口只问一次）/ default（直接下到默认目录）
     const prefsPath = () => path.join(app.getPath('userData'), 'download-prefs.json');
