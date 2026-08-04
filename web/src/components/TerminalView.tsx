@@ -10,18 +10,11 @@ import { ws } from '../ws';
 import { useStore, type Rect, type TerminalTab } from '../store';
 
 
+
+/** 服务端补全候选（bash 原生补全 / 本地上下文补全） */
 interface CompletionItem {
   text: string;
   type: 'cmd' | 'file' | 'dir' | 'svc';
-}
-
-interface CompletionState {
-  items: CompletionItem[];
-  selected: number;
-  kind: 'cmd' | 'path' | 'svc';
-  prefix: string;
-  x: number;
-  y: number;
 }
 
 /** systemctl 服务操作子命令（这些命令的参数是服务名，按服务补全而非路径） */
@@ -77,7 +70,6 @@ function TerminalViewInner({ tab, rect }: { tab: TerminalTab; rect: Rect | null 
   const cmdBufRef = useRef('');
   const cursorRef = useRef(0);
   const cwdRef = useRef<string | null>(null);
-  const completionRef = useRef<CompletionState | null>(null);
   const autoTimerRef = useRef<number | undefined>(undefined);
   const completeSeqRef = useRef(0);
 
@@ -86,7 +78,6 @@ function TerminalViewInner({ tab, rect }: { tab: TerminalTab; rect: Rect | null 
   const pwdBufRef = useRef('');
   const pwdTimerRef = useRef<number | undefined>(undefined);
 
-  const [completion, setCompletion] = useState<CompletionState | null>(null);
   // 搜索状态
   const searchAddonRef = useRef<SearchAddon | null>(null);
   const [searchOpen, setSearchOpen] = useState(false);
@@ -110,14 +101,11 @@ function TerminalViewInner({ tab, rect }: { tab: TerminalTab; rect: Rect | null 
   const isActive = activeTabId === tab.id;
   const isAgent = tab.kind === 'agent';
 
-  const closeCompletion = (): void => {
-    completionRef.current = null;
-    setCompletion(null);
-  };
-
   /** 幽灵补全（VSCode 式）：最佳匹配灰色显示在光标后，方向键右键应用 */
   const [ghost, setGhost] = useState<{ text: string } | null>(null);
   const ghostRef = useRef<{ text: string } | null>(null);
+  /** Tab 多候选循环补全状态（bash 式：再按 Tab 回退并应用下一个候选） */
+  const tabCycleRef = useRef<{ index: number; applied: string; key: string } | null>(null);
   const closeGhost = (): void => {
     if (ghostRef.current) {
       ghostRef.current = null;
@@ -149,13 +137,13 @@ function TerminalViewInner({ tab, rect }: { tab: TerminalTab; rect: Rect | null 
     const cur = cursorRef.current;
     const ctx = getCompletionContext(buf, cur);
     if (!ctx) {
-      closeCompletion();
+      closeGhost();
       closeGhost();
       return;
     }
     // 空前缀（如 systemctl restart <空格>）仅 Tab 强制触发，自动模式抑制（避免输入空格弹全部候选）
     if (!force && ctx.prefix === '') {
-      closeCompletion();
+      closeGhost();
       closeGhost();
       return;
     }
@@ -183,65 +171,44 @@ function TerminalViewInner({ tab, rect }: { tab: TerminalTab; rect: Rect | null 
         return;
       }
     }
-    if (force && items.length === 1 && !completionRef.current) {
-      // Tab 且唯一候选：直接补全（bash 式），不弹列表
+    if (force) {
+      // Tab：唯一候选直接补全；多候选循环应用（bash 式，不弹下拉框）
       closeGhost();
-      const item = items[0];
+      if (items.length === 1) {
+        const item = items[0];
+        let suffix = item.text.slice(ctx.prefix.length);
+        if (ctx.kind === 'path' && item.type === 'dir' && !item.text.endsWith('/')) {
+          suffix += '/';
+        }
+        applySuffix(suffix);
+        tabCycleRef.current = null;
+        return;
+      }
+      // 多候选：同一批候选（Tab 回退后前缀相同）则取下一个，否则从头
+      const key = `${items[0]?.text ?? ''}|${items.length}`;
+      const prev = tabCycleRef.current;
+      const startIdx = prev && prev.key === key ? (prev.index + 1) % items.length : 0;
+      const item = items[startIdx];
       let suffix = item.text.slice(ctx.prefix.length);
       if (ctx.kind === 'path' && item.type === 'dir' && !item.text.endsWith('/')) {
         suffix += '/';
       }
       applySuffix(suffix);
+      tabCycleRef.current = { index: startIdx, applied: suffix, key };
       return;
     }
-    if (force || completionRef.current) {
-      closeGhost();
-      // 光标位置 → 像素
-      const term = termRef.current;
-      if (!term) return;
-      const dims = (term as unknown as { _core?: { _renderService?: { dimensions?: { actualCellWidth: number; actualCellHeight: number } } } })._core?._renderService?.dimensions;
-      const cellW = dims?.actualCellWidth ?? 8;
-      const cellH = dims?.actualCellHeight ?? 13;
-      const state: CompletionState = {
-        items,
-        selected: 0,
-        kind: ctx.kind,
-        prefix: ctx.prefix,
-        x: Math.round(term.buffer.active.cursorX * cellW),
-        y: Math.round(term.buffer.active.cursorY * cellH),
-      };
-      completionRef.current = state;
-      setCompletion(state);
-    } else {
-      // 自动模式：最佳匹配灰色显示（幽灵文本），不实际输入
-      const item = items[0];
-      let suffix = item.text.slice(ctx.prefix.length);
-      if (ctx.kind === 'path' && item.type === 'dir' && !item.text.endsWith('/')) {
-        suffix += '/';
-      }
-      if (suffix !== '') {
-        ghostRef.current = { text: suffix };
-        setGhost({ text: suffix });
-      } else {
-        closeGhost();
-      }
-    }
-  };
-
-  const applyCompletion = (): void => {
-    const comp = completionRef.current;
-    if (!comp) return;
-    const item = comp.items[comp.selected];
-    let suffix = item.text.slice(comp.prefix.length);
-    if (comp.kind === 'path' && item.type === 'dir' && !item.text.endsWith('/')) {
+    // 自动模式：最佳匹配灰色显示（幽灵文本），不实际输入
+    const item = items[0];
+    let suffix = item.text.slice(ctx.prefix.length);
+    if (ctx.kind === 'path' && item.type === 'dir' && !item.text.endsWith('/')) {
       suffix += '/';
     }
-    if (suffix === '') {
-      closeCompletion();
-      return;
+    if (suffix !== '') {
+      ghostRef.current = { text: suffix };
+      setGhost({ text: suffix });
+    } else {
+      closeGhost();
     }
-    applySuffix(suffix);
-    closeCompletion();
   };
 
   const scheduleAuto = (): void => {
@@ -302,32 +269,6 @@ function TerminalViewInner({ tab, rect }: { tab: TerminalTab; rect: Rect | null 
         setSearchOpen(true);
         return;
       }
-      const comp = completionRef.current;
-
-      // 浮层打开时的按键拦截
-      if (comp) {
-        if (d === '\r' || d === '\t') {
-          applyCompletion();
-          return;
-        }
-        if (d === '\x1b[A') {
-          completionRef.current = { ...comp, selected: Math.max(0, comp.selected - 1) };
-          setCompletion(completionRef.current);
-          return;
-        }
-        if (d === '\x1b[B') {
-          completionRef.current = { ...comp, selected: Math.min(comp.items.length - 1, comp.selected + 1) };
-          setCompletion(completionRef.current);
-          return;
-        }
-        if (d.startsWith('\x1b')) {
-          closeCompletion();
-          return;
-        }
-        closeCompletion();
-        // 继续作为普通输入处理
-      }
-
       // 方向键右键：应用幽灵补全（无 ghost 时正常移动光标）
       if (d === '\x1b[C') {
         if (ghostRef.current) {
@@ -340,8 +281,17 @@ function TerminalViewInner({ tab, rect }: { tab: TerminalTab; rect: Rect | null 
       // 其他输入：清除旧 ghost（120ms 后自动生成新的）
       closeGhost();
 
-      // Tab：触发补全列表（不发送到 shell）
+      // Tab：触发补全（唯一候选直接补全；多候选先回退上次补全再循环应用，不弹下拉框）
       if (d === '\t') {
+        const cycle = tabCycleRef.current;
+        if (cycle && cycle.applied !== '' && cmdBufRef.current.endsWith(cycle.applied)) {
+          const n = cycle.applied.length;
+          if (streamIdRef.current) {
+            ws.send({ type: 'terminal:input', streamId: streamIdRef.current, data: '\x7f'.repeat(n) });
+          }
+          cmdBufRef.current = cmdBufRef.current.slice(0, -n);
+          cursorRef.current = Math.max(0, cursorRef.current - n);
+        }
         void requestCompletion(true);
         return;
       }
@@ -383,7 +333,7 @@ function TerminalViewInner({ tab, rect }: { tab: TerminalTab; rect: Rect | null 
         // Ctrl+C：shell 中断清行，同步输入缓冲（避免补全上下文残留）
         cmdBufRef.current = '';
         cursorRef.current = 0;
-        closeCompletion();
+        closeGhost();
       } else if (d === '\x15') {
         // Ctrl+U：删除光标前所有字符（readline）
         cmdBufRef.current = cmdBufRef.current.slice(cursorRef.current);
@@ -409,7 +359,7 @@ function TerminalViewInner({ tab, rect }: { tab: TerminalTab; rect: Rect | null 
         // 历史命令：缓冲失效
         cmdBufRef.current = '';
         cursorRef.current = 0;
-        closeCompletion();
+        closeGhost();
       } else if (!d.startsWith('\x1b')) {
         // 视口在顶部（clear 后）时输入先滚回底部
         if (term.buffer.active.viewportY === 0) term.scrollToBottom();
@@ -609,7 +559,7 @@ function TerminalViewInner({ tab, rect }: { tab: TerminalTab; rect: Rect | null 
       window.clearTimeout(reconnectTimerRef.current);
       window.clearTimeout(exitTimerRef.current);
       shouldReconnectRef.current = false;
-      closeCompletion();
+      closeGhost();
       if (streamIdRef.current) {
         const unloading = (window as unknown as { __taUnloading?: boolean }).__taUnloading;
         // tab 仍存在 = 布局移动（拖拽分屏/合并）等非关闭操作：不销毁 tmux，重挂后 attach 恢复现场；
@@ -820,56 +770,6 @@ function TerminalViewInner({ tab, rect }: { tab: TerminalTab; rect: Rect | null 
         );
       })()}
 
-      {/* 补全浮层 */}
-      {completion && (
-        <div
-          className="absolute z-50 w-72 overflow-hidden rounded-sm border border-[#3c3c3c] bg-[#252526] shadow-2xl"
-          style={(() => {
-            // VSCode 式：优先在光标下方弹出（不遮当前输入行）；下方空间不足时收窄高度，
-            // 只有完全放不下才弹到上方（底部对齐光标行上方，尽量不遮输入内容）
-            const elH = termRef.current?.element?.clientHeight ?? 0;
-            const below = elH - (completion.y + 13);
-            const listMaxH = Math.min(224, Math.max(48, below - 44));
-            const top = below >= 54 ? completion.y + 13 : Math.max(0, completion.y - listMaxH - 44);
-            return { left: Math.min(completion.x, 200), top };
-          })()}
-        >
-          <div
-            className="overflow-y-auto py-0.5"
-            style={{ maxHeight: Math.min(224, Math.max(48, (termRef.current?.element?.clientHeight ?? 0) - (completion.y + 13) - 44)) }}
-          >
-            {completion.items.map((it, i) => (
-              <div
-                key={it.text + i}
-                className={`flex cursor-pointer items-center gap-2 px-3 py-1 text-[12px] ${
-                  i === completion.selected ? 'bg-[#094771] text-white' : 'text-[#cccccc] hover:bg-[#2a2d2e]'
-                }`}
-                onMouseEnter={() => {
-                  completionRef.current = { ...completion, selected: i };
-                  setCompletion(completionRef.current);
-                }}
-                onClick={applyCompletion}
-              >
-                <span className="w-4 shrink-0 text-center">
-                  {it.type === 'dir' ? (
-                    <span className="text-[#dcb67a]">▸</span>
-                  ) : it.type === 'cmd' ? (
-                    <span className="text-[#4fc1ff]">&gt;_</span>
-                  ) : it.type === 'svc' ? (
-                    <span className="text-[#4ec9b0]">⚙</span>
-                  ) : (
-                    <span className="text-[#858585]">·</span>
-                  )}
-                </span>
-                <span className="truncate font-mono">{it.text}</span>
-              </div>
-            ))}
-          </div>
-          <div className="border-t border-[#3c3c3c] bg-[#1e1e1e] px-3 py-0.5 text-[10px] text-[#5a5a5a]">
-            ↑↓ 选择 · Enter 确认 · Esc 关闭
-          </div>
-        </div>
-      )}
       {/* 回放播放器 */}
       {replayOpen && recordingRef.current.length > 0 && (
         <ReplayOverlay
