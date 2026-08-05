@@ -1323,8 +1323,53 @@ function ForwardSideBar() {
   );
 }
 
-export default function SideBar({ view }: { view: View }) {
-  const sidebarWidth = useStore((s) => s.sidebarWidth);
+/** 插件侧边栏：已启用插件入口 + 管理入口 */
+function PluginsSideBar({ current }: { current: string }) {
+  const plugins = useStore((s) => s.plugins);
+  const setView = useStore((s) => s.setView);
+  const openOuterTab = useStore((s) => s.openOuterTab);
+  const enabled = plugins.filter((p) => p.enabled && !p.error);
+  const open = (pid: string): void => {
+    const v = `plugin:${pid}` as View;
+    setView(v);
+    openOuterTab({ kind: 'plugin', id: v, pluginId: pid });
+  };
+  return (
+    <div className="flex min-h-0 flex-1 flex-col overflow-y-auto">
+      <div className="px-4 pt-3 pb-1 text-[11px] font-medium tracking-wide text-[#8a8a8a]">插件</div>
+      {enabled.length === 0 && <div className="px-4 pt-2 text-xs text-[#6a6a6a]">无已启用插件</div>}
+      {enabled.map((p) => (
+        <button
+          key={p.id}
+          onClick={() => open(p.id)}
+          className={`flex w-full items-center gap-2 px-4 py-1.5 text-left text-[13px] ${
+            current === `plugin:${p.id}` ? 'bg-[#37373d] text-white' : 'text-[#cccccc] hover:bg-[#2a2d2e]'
+          }`}
+        >
+          <svg viewBox="0 0 16 16" className="h-3.5 w-3.5 shrink-0 text-[#858585]" fill="currentColor">
+            <path d="M6.25 1.5A1.75 1.75 0 004.5 3.25v.5H3.25A1.75 1.75 0 001.5 5.5v1.25h.75a1.25 1.25 0 010 2.5h-.75v1.25a1.75 1.75 0 001.75 1.75h1.25v.75a1.25 1.25 0 002.5 0v-.75h2.5v.75a1.25 1.25 0 002.5 0v-.75h1.25a1.75 1.75 0 001.75-1.75v-1.25h-.75a1.25 1.25 0 010-2.5h.75V5.5a1.75 1.75 0 00-1.75-1.75h-1.25v-.5a1.75 1.75 0 00-3.5 0v.5h-2.5v-.5a1.75 1.75 0 00-1.75-1.75z" />
+          </svg>
+          <span className="min-w-0 truncate">{p.ui.length > 0 ? p.ui[0].label : p.name}</span>
+        </button>
+      ))}
+      <div className="mt-auto border-t border-[#1e1e1e] px-4 py-2">
+        <button
+          onClick={() => {
+            setView('plugin:manage');
+            openOuterTab({ kind: 'plugins-manage', id: 'plugins-manage' });
+          }}
+          className={`w-full rounded-sm px-2 py-1.5 text-left text-[12px] ${
+            current === 'plugin:manage' ? 'bg-[#37373d] text-white' : 'text-[#858585] hover:bg-[#2a2d2e] hover:text-[#cccccc]'
+          }`}
+        >
+          管理插件…
+        </button>
+      </div>
+    </div>
+  );
+}
+
+export default function SideBar({ view }: { view: View }) {  const sidebarWidth = useStore((s) => s.sidebarWidth);
   const setSidebarWidth = useStore((s) => s.setSidebarWidth);
   const loadHosts = useStore((s) => s.loadHosts);
   const pushToast = useStore((s) => s.pushToast);
@@ -1390,6 +1435,7 @@ export default function SideBar({ view }: { view: View }) {
       {view === 'hosts' && <HostsSideBar onContextMenu={openCtx} />}
       {view === 'sftp' && <SftpSideBar />}
       {view === 'forward' && <ForwardSideBar />}
+      {view.startsWith('plugin:') && <PluginsSideBar current={view} />}
       {/* 拖拽手柄：调整侧边栏宽度 */}
       <div
         title="拖动调整侧边栏宽度"

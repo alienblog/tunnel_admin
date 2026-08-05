@@ -1,0 +1,48 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <title>示例插件</title>
+  <style>
+    body { margin: 0; padding: 20px; background: #1e1e1e; color: #cccccc; font: 13px/1.6 system-ui, sans-serif; }
+    h1 { font-size: 15px; margin: 0 0 12px; color: #e8e8e8; }
+    .card { border: 1px solid #3c3c3c; border-radius: 4px; padding: 10px 12px; margin-bottom: 10px; background: #252526; }
+    .card b { color: #4ec9b0; font-weight: 600; }
+    button { background: #2d2d2d; border: 1px solid #3c3c3c; color: #cccccc; border-radius: 3px; padding: 4px 10px; cursor: pointer; font-size: 12px; }
+    button:hover { background: #3a3a3a; }
+    pre { background: #141414; border: 1px solid #333; border-radius: 3px; padding: 8px; overflow-x: auto; margin: 6px 0 0; font-size: 12px; }
+    .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+  </style>
+</head>
+<body>
+  <h1>示例插件</h1>
+  <div class="card">
+    <div class="row">
+      <span>插件 id：<b id="pid">…</b></span>
+      <button onclick="call('ping')">ping</button>
+      <button onclick="call('counter')">counter+1</button>
+      <button onclick="call('echo')">echo</button>
+    </div>
+    <pre id="out">点击按钮调用宿主 API 路由（/api/plugins/&lt;id&gt;/rpc/…）</pre>
+  </div>
+  <div class="card">
+    私有存储演示：counter 经 <b>ctx.store</b> 持久化（AES-256-GCM 加密落盘），刷新页面后计数不丢。
+  </div>
+  <script src="/api/plugins/ta-client.js"></script>
+  <script>
+    document.getElementById('pid').textContent = window.ta.pluginId;
+    async function call(name) {
+      const out = document.getElementById('out');
+      try {
+        const r = await window.ta.api('/api/plugins/' + window.ta.pluginId + '/rpc/' + name, {
+          method: name === 'echo' ? 'POST' : 'GET',
+          body: name === 'echo' ? JSON.stringify({ hello: '插件' }) : undefined,
+        });
+        out.textContent = JSON.stringify(r, null, 2);
+      } catch (e) {
+        out.textContent = '错误: ' + e.message;
+      }
+    }
+  </script>
+</body>
+</html>

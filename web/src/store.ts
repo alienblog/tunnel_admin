@@ -2,7 +2,24 @@ import { create } from 'zustand';
 import { api, type ApprovalInfo, type Host } from './api';
 import type { SessionInfo } from './ws';
 
-export type View = 'terminals' | 'hosts' | 'sftp' | 'forward';
+export type View = 'terminals' | 'hosts' | 'sftp' | 'forward' | 'plugin:manage' | `plugin:${string}`;
+
+/** 插件信息（服务端 /api/plugins 返回） */
+export interface PluginInfo {
+  id: string;
+  name: string;
+  version: string;
+  description: string;
+  source: 'installed' | 'dev';
+  dir: string;
+  enabled: boolean;
+  error?: string;
+  ui: Array<{ id: string; label: string; entry: string }>;
+  activation: 'onStartup' | 'onUiOpen';
+}
+
+/** 管理页视图 id */
+export const PLUGIN_MANAGE_VIEW = 'plugin:manage' as const;
 
 /**
  * 外层 tab（VSCode 编辑器组模型的外层）：
@@ -15,7 +32,9 @@ export type OuterTab =
   | { kind: 'editor'; id: string; hostId: string; hostName: string; path: string; name: string }
   | { kind: 'settings'; id: 'settings' }
   | { kind: 'transfer'; id: 'transfer' }
-  | { kind: 'audit'; id: 'audit' };
+  | { kind: 'audit'; id: 'audit' }
+  | { kind: 'plugin'; id: string; pluginId: string }
+  | { kind: 'plugins-manage'; id: 'plugins-manage' };
 
 /** 传输记录（上传/下载，供传输管理器展示） */
 export interface TransferRec {
@@ -301,6 +320,8 @@ interface AppState {
   authed: boolean;
   view: View;
   hosts: Host[];
+  /** 已加载插件列表（NAV 动态项 / 插件管理页） */
+  plugins: PluginInfo[];
   approvals: ApprovalInfo[];
   mcpSessions: SessionInfo[];
   tabs: TerminalTab[];
@@ -357,6 +378,7 @@ interface AppState {
   setAuthed: (v: boolean) => void;
   setView: (v: View) => void;
   loadHosts: () => Promise<void>;
+  loadPlugins: () => Promise<void>;
   refreshHosts: () => Promise<void>;
   upsertApproval: (a: ApprovalInfo) => void;
   removeApproval: (id: number) => void;
@@ -446,6 +468,7 @@ export const useStore = create<AppState>((set, get) => ({
   authed: false,
   view: 'terminals',
   hosts: [],
+  plugins: [],
   approvals: [],
   mcpSessions: [],
   tabs: [],
@@ -704,6 +727,14 @@ export const useStore = create<AppState>((set, get) => ({
   },
   refreshHosts: async () => {
     await get().loadHosts();
+  },
+  loadPlugins: async () => {
+    try {
+      const { plugins } = await api<{ plugins: PluginInfo[] }>('/api/plugins');
+      set({ plugins });
+    } catch {
+      // 插件接口异常不阻断主功能
+    }
   },
 
   upsertApproval: (a) => {

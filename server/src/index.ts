@@ -24,6 +24,7 @@ import { registerWs } from './ws.js';
 import { registerMcpEndpoint, registerMcpPrompt } from './mcp/index.js';
 import { McpPortManager } from './mcpPortManager.js';
 import { registerMcpPortSettings } from './routes/mcpPort.js';
+import { PluginManager } from './plugins/manager.js';
 
 const config = loadConfig();
 const db = openDb(config.dataDir);
@@ -58,6 +59,11 @@ registerWs(app, config, sshManager);
 const mcpDeps = { config, db, sshManager, approvals };
 const mcpPorts = new McpPortManager(mcpDeps);
 
+// 插件系统
+const pluginManager = new PluginManager({ db, masterKey: config.masterKey, sshManager }, config);
+pluginManager.registerRoutes(app);
+await pluginManager.rescan();
+
 // MCP 接入提示词（主 API 提供，地址按 MCP 实际端口动态生成）
 registerMcpPrompt(app, { config, db, sshManager, approvals, mcpPorts });
 // MCP 端口设置接口（手动输入/随机生成，保存即生效并持久化到 data/config.json）
@@ -89,6 +95,7 @@ if (fs.existsSync(webDist)) {
 
 const shutdown = (): void => {
   app.log.info('正在关闭…');
+  void pluginManager.disposeAll();
   sshManager.closeAll();
   void mcpPorts.close();
   db.close();

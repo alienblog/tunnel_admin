@@ -1,0 +1,15 @@
+{
+  "id": "ta.demo",
+  "name": "示例插件",
+  "version": "0.1.0",
+  "description": "插件系统骨架演示：路由、私有 KV 存储、定时任务、iframe 页面与宿主桥 ta.api",
+  "entry": "server/index.js",
+  "ui": [
+    {
+      "id": "main",
+      "label": "示例插件",
+      "entry": "index.html"
+    }
+  ],
+  "activation": "onStartup"
+}

@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { api, type ApprovalInfo } from './api';
 import { getDesktop } from './desktop';
 import { ws, type SessionInfo } from './ws';
-import { useStore, type HostMetrics, type OuterTab, type Toast, type View } from './store';
+import { useStore, type HostMetrics, type OuterTab, type PluginInfo, type Toast, type View } from './store';
 import SideBar from './components/SideBar';
 import Login from './pages/Login';
 import Terminals from './pages/Terminals';
@@ -15,10 +15,22 @@ const NAV: Array<{ view: View; label: string; icon: string }> = [
   { view: 'forward', label: '转发', icon: 'forward' },
 ];
 
+/** 动态 NAV：基础项 + 已启用且声明了页面的插件（每插件取第一个 ui 入口） */
+function navItems(plugins: PluginInfo[]): Array<{ view: View; label: string; icon: string }> {
+  const items = [...NAV];
+  for (const p of plugins) {
+    if (p.enabled && !p.error && p.ui.length > 0) {
+      items.push({ view: `plugin:${p.id}` as View, label: p.ui[0].label, icon: 'puzzle' });
+    }
+  }
+  return items;
+}
+
 /** 底部工具按钮：点击在外层打开工具 tab */
 const TOOLS: Array<{ id: string; label: string; icon: string }> = [
   { id: 'transfer', label: '传输', icon: 'transfer' },
   { id: 'audit', label: '审计', icon: 'audit' },
+  { id: 'plugins-manage', label: '插件', icon: 'puzzle' },
   { id: 'settings', label: '设置', icon: 'settings' },
 ];
 
@@ -58,6 +70,11 @@ const ICONS: Record<string, React.ReactNode> = {
       <path d="M8 1.5a.75.75 0 01.75.75v9.19l2.47-2.47a.75.75 0 111.06 1.06l-3.75 3.75a.75.75 0 01-1.06 0l-3.75-3.75a.75.75 0 111.06-1.06l2.47 2.47V2.25A.75.75 0 018 1.5z" />
     </svg>
   ),
+  puzzle: (
+    <svg viewBox="0 0 16 16" className="h-5 w-5" fill="currentColor">
+      <path d="M6.25 1.5A1.75 1.75 0 004.5 3.25v.5H3.25A1.75 1.75 0 001.5 5.5v1.25h.75a1.25 1.25 0 010 2.5h-.75v1.25a1.75 1.75 0 001.75 1.75h1.25v.75a1.25 1.25 0 002.5 0v-.75h2.5v.75a1.25 1.25 0 002.5 0v-.75h1.25a1.75 1.75 0 001.75-1.75v-1.25h-.75a1.25 1.25 0 010-2.5h.75V5.5a1.75 1.75 0 00-1.75-1.75h-1.25v-.5a1.75 1.75 0 00-3.5 0v.5h-2.5v-.5a1.75 1.75 0 00-1.75-1.75z" />
+    </svg>
+  ),
 };
 
 function ActivityBar({
@@ -73,6 +90,8 @@ function ActivityBar({
 }) {
   const openOuterTab = useStore((s) => s.openOuterTab);
   const activeOuterId = useStore((s) => s.activeOuterId);
+  const plugins = useStore((s) => s.plugins);
+  const items = navItems(plugins);
 
   return (
     <div className="flex w-12 shrink-0 flex-col items-center bg-[#333333] py-1">
@@ -90,11 +109,19 @@ function ActivityBar({
           )}
         </svg>
       </button>
-      {NAV.map((n) => (
+      {items.map((n) => (
         <button
           key={n.view}
           title={n.label}
           onClick={() => {
+            // 插件项：切换视图并打开插件页面 tab
+            if (n.view.startsWith('plugin:')) {
+              const pid = n.view.slice('plugin:'.length);
+              setCollapsed(false);
+              setView(n.view as View);
+              openOuterTab({ kind: 'plugin', id: n.view, pluginId: pid });
+              return;
+            }
             // 点击当前视图图标：收起/展开侧边栏（VSCode 行为）
             if (view === n.view && !collapsed) {
               setCollapsed(true);
@@ -118,7 +145,9 @@ function ActivityBar({
             ? { kind: 'transfer', id: 'transfer' }
             : t.id === 'audit'
               ? { kind: 'audit', id: 'audit' }
-              : { kind: 'settings', id: 'settings' };
+              : t.id === 'plugins-manage'
+                ? { kind: 'plugins-manage', id: 'plugins-manage' }
+                : { kind: 'settings', id: 'settings' };
         const active = activeOuterId === t.id;
         return (
           <button
@@ -348,7 +377,8 @@ function StatusBar() {
   const view = useStore((s) => s.view);
   const quickCommands = useStore((s) => s.quickCommands);
   const pushToast = useStore((s) => s.pushToast);
-  const label = NAV.find((n) => n.view === view)?.label ?? '';
+  const plugins = useStore((s) => s.plugins);
+  const label = navItems(plugins).find((n) => n.view === view)?.label ?? '';
 
   /** 在激活终端执行快捷命令 */
   const runQuick = (cmd: string): void => {
@@ -415,6 +445,7 @@ export default function App() {
           useStore.getState().setAuthed(true);
           ws.connect();
           void useStore.getState().loadHosts();
+          void useStore.getState().loadPlugins();
           // MCP 地址（状态栏显示；独立端口时来自 /api/mcp/info）
           void api<{ url: string }>('/api/mcp/info')
             .then((i) => useStore.getState().setMcpUrl(i.url))

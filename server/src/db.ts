@@ -101,6 +101,22 @@ CREATE TABLE IF NOT EXISTS cmd_rules (
   created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
+-- 插件私有 KV 存储（value 经 AES-256-GCM 加密；每插件独立命名空间）
+CREATE TABLE IF NOT EXISTS plugin_kv (
+  plugin_id TEXT NOT NULL,
+  key TEXT NOT NULL,
+  value_enc TEXT NOT NULL,
+  updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+  PRIMARY KEY (plugin_id, key)
+);
+
+-- 应用级设置（插件开发目录、禁用列表等）
+CREATE TABLE IF NOT EXISTS app_settings (
+  key TEXT PRIMARY KEY,
+  value TEXT NOT NULL,
+  updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
 -- 默认危险命令规则（可增删）
 INSERT OR IGNORE INTO cmd_rules (pattern, action, note) VALUES
   ('^\\s*rm\\s+-rf\\s+/\\s*$', 'block', '删除根目录'),

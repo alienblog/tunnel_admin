@@ -11,10 +11,12 @@ import {
 import { dropIndicatorStyle, useDropTarget } from '../components/useDropTarget';
 import { HostWorkspace } from './Terminals';
 import { AuditTab, EditorTab, SettingsTab, TransferTab } from './tabs';
+import PluginPage from './PluginPage';
+import PluginsManage from './PluginsManage';
 
 /**
  * 第一层工作区（VSCode 编辑器组模型）：
- * - 外层 tab（主机/编辑器/设置/传输/审计）也可拖拽分屏/合并（outerLayout 布局树）
+ * - 外层 tab（主机/编辑器/设置/传输/审计/插件）也可拖拽分屏/合并（outerLayout 布局树）
  * - 工具页拖到右缘可停靠为固定右栏（可展开/折叠）
  * - 内容与终端同理：渲染在布局树外的池中按矩形绝对定位，布局重组零卸载
  */
@@ -25,6 +27,10 @@ export function outerLabel(tab: OuterTab): string {
   if (tab.kind === 'settings') return '设置';
   if (tab.kind === 'transfer') return '传输';
   if (tab.kind === 'audit') return '审计';
+  if (tab.kind === 'plugins-manage') return '插件管理';
+  if (tab.kind === 'plugin') {
+    return useStore.getState().plugins.find((p) => p.id === tab.pluginId)?.name ?? tab.pluginId;
+  }
   return tab.hostId;
 }
 
@@ -34,7 +40,9 @@ export function OuterTabContent({ tab }: { tab: OuterTab }) {
   if (tab.kind === 'editor') return <EditorTab tab={tab} />;
   if (tab.kind === 'settings') return <SettingsTab />;
   if (tab.kind === 'transfer') return <TransferTab />;
-  return <AuditTab />;
+  if (tab.kind === 'audit') return <AuditTab />;
+  if (tab.kind === 'plugin') return <PluginPage pluginId={tab.pluginId} />;
+  return <PluginsManage />;
 }
 
 /** 外层 tab 图标 */
@@ -64,6 +72,13 @@ export function OuterTabIcon({ tab }: { tab: OuterTab }) {
     return (
       <svg viewBox="0 0 16 16" className="h-3.5 w-3.5 shrink-0 text-[#cca700]" fill="currentColor">
         <path d="M2 3.75A.75.75 0 012.75 3h10.5a.75.75 0 010 1.5H2.75A.75.75 0 012 3.75zm0 4A.75.75 0 012.75 7h10.5a.75.75 0 010 1.5H2.75A.75.75 0 012 7.75zm0 4A.75.75 0 012.75 11h6.5a.75.75 0 010 1.5h-6.5A.75.75 0 012 11.75z" />
+      </svg>
+    );
+  }
+  if (tab.kind === 'plugin' || tab.kind === 'plugins-manage') {
+    return (
+      <svg viewBox="0 0 16 16" className="h-3.5 w-3.5 shrink-0 text-[#4fc1ff]" fill="currentColor">
+        <path d="M6.25 1.5A1.75 1.75 0 004.5 3.25v.5H3.25A1.75 1.75 0 001.5 5.5v1.25h.75a1.25 1.25 0 010 2.5h-.75v1.25a1.75 1.75 0 001.75 1.75h1.25v.75a1.25 1.25 0 002.5 0v-.75h2.5v.75a1.25 1.25 0 002.5 0v-.75h1.25a1.75 1.75 0 001.75-1.75v-1.25h-.75a1.25 1.25 0 010-2.5h.75V5.5a1.75 1.75 0 00-1.75-1.75h-1.25v-.5a1.75 1.75 0 00-3.5 0v.5h-2.5v-.5a1.75 1.75 0 00-1.75-1.75z" />
       </svg>
     );
   }
