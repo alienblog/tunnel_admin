@@ -22,6 +22,7 @@
       <button onclick="call('ping')">ping</button>
       <button onclick="call('counter')">counter+1</button>
       <button onclick="call('echo')">echo</button>
+      <button id="btn-conn" onclick="connectDemo()">一键连接测试设备</button>
     </div>
     <pre id="out">点击按钮调用宿主 API 路由（/api/plugins/&lt;id&gt;/rpc/…）</pre>
   </div>
@@ -41,6 +42,25 @@
         out.textContent = JSON.stringify(r, null, 2);
       } catch (e) {
         out.textContent = '错误: ' + e.message;
+      }
+    }
+    async function connectDemo() {
+      const out = document.getElementById('out');
+      const btn = document.getElementById('btn-conn');
+      btn.disabled = true;
+      btn.textContent = '连接中…';
+      try {
+        // 1. 插件后端组装凭据 → 一次性令牌（明文凭据不出服务端）
+        const r = await window.ta.api('/api/plugins/' + window.ta.pluginId + '/rpc/connect', { method: 'POST' });
+        if (r.error) { out.textContent = '错误: ' + r.error; return; }
+        // 2. 交给宿主打开终端
+        const tabId = await window.ta.ssh.connect(r.token, '动态设备（demo）');
+        out.textContent = '已打开终端: ' + tabId;
+      } catch (e) {
+        out.textContent = '错误: ' + e.message;
+      } finally {
+        btn.disabled = false;
+        btn.textContent = '一键连接测试设备';
       }
     }
   </script>

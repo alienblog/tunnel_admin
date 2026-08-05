@@ -1,6 +1,7 @@
 import type Database from 'better-sqlite3';
 import type { FastifyReply, FastifyRequest } from 'fastify';
 import type { SshManager } from '../ssh/manager.js';
+import type { DynamicConnectInfo } from './connectQueue.js';
 
 /** 插件清单（plugin.json，位于插件根目录） */
 export interface PluginManifest {
@@ -74,9 +75,13 @@ export interface PluginContext {
   ): void;
   /** 只读数据库访问（单用户本地信任模型；如需建表请用 plugin_ 前缀） */
   db: Database.Database;
-  /** SSH 连接（Phase 2 提供，暂为占位） */
-  ssh?: {
-    connect(cfg: Record<string, unknown>): Promise<{ tabId: string }>;
+  /**
+   * SSH 动态连接：
+   * - requestConnect：登记一次连接（凭据在此传入，仅存于服务端进程），返回一次性令牌
+   * - 插件前端用 ta.ssh.connect(token) 让宿主打开终端（明文凭据不出服务端）
+   */
+  ssh: {
+    requestConnect(info: DynamicConnectInfo): { token: string };
   };
 }
 

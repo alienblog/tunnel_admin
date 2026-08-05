@@ -31,7 +31,8 @@ export function outerLabel(tab: OuterTab): string {
   if (tab.kind === 'plugin') {
     return useStore.getState().plugins.find((p) => p.id === tab.pluginId)?.name ?? tab.pluginId;
   }
-  return tab.hostId;
+  if (tab.kind === 'host') return tab.label ?? tab.hostId;
+  return '';
 }
 
 /** 外层 tab 内容（按类型渲染） */

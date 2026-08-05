@@ -28,7 +28,7 @@ export const PLUGIN_MANAGE_VIEW = 'plugin:manage' as const;
  * - settings / transfer / audit：单例工具页
  */
 export type OuterTab =
-  | { kind: 'host'; id: string; hostId: string }
+  | { kind: 'host'; id: string; hostId: string; label?: string }
   | { kind: 'editor'; id: string; hostId: string; hostName: string; path: string; name: string }
   | { kind: 'settings'; id: 'settings' }
   | { kind: 'transfer'; id: 'transfer' }
@@ -68,6 +68,8 @@ export interface TerminalTab {
   /** 后台命令完成的未读状态（点击 tab 清除） */
   notify?: 'success' | 'warning' | 'error';
   error?: string;
+  /** 插件动态连接令牌（ctx.ssh.requestConnect 产生，一次性；存在时 open 走 connectToken） */
+  connectToken?: string;
 }
 
 /**
@@ -397,8 +399,8 @@ interface AppState {
   setEditorDirty: (id: string, dirty: boolean) => void;
   /** 幂等展开（reveal 用，不翻转） */
   expandSftpPath: (path: string) => void;
-  /** 打开/激活主机外层 tab（终端相关动作内部调用） */
-  openHostOuter: (hostId: string) => void;
+  /** 打开/激活主机外层 tab（终端相关动作内部调用）；label 可选（插件动态设备名） */
+  openHostOuter: (hostId: string, label?: string) => void;
   /** 打开外层 tab（editor 同名文件复用；settings/transfer/audit 单例） */
   openOuterTab: (tab: OuterTab) => void;
   /** 关闭外层 tab（host 关闭时同时关闭其全部终端） */
@@ -424,6 +426,8 @@ interface AppState {
   invalidateSftpPath: (hostId: string, path: string) => void;
   /** 打开主机工作区（外层激活），新建终端（若已有工作区则加入第一个组） */
   addTab: (host: Host) => string;
+  /** 插件动态设备一键连接：令牌由插件后端 ctx.ssh.requestConnect 产生（一次性） */
+  openDynamicTerminal: (token: string, name: string) => string;
   /** 在指定组的 tab 栏加号：组内新建终端（不分屏） */
   addTerminalToGroup: (hostId: string, groupId: string) => string | null;
   addAgentTab: (session: SessionInfo, opts?: { activate?: boolean }) => string;
@@ -558,9 +562,11 @@ export const useStore = create<AppState>((set, get) => ({
   setAuthed: (v) => set({ authed: v }),
   setView: (v) => set({ view: v }),
 
-  openHostOuter: (hostId) => {
+  openHostOuter: (hostId, label) => {
     const exists = get().outerTabs.some((t) => t.kind === 'host' && t.hostId === hostId);
-    const outerTabs = exists ? get().outerTabs : [...get().outerTabs, { kind: 'host', id: hostId, hostId } as OuterTab];
+    const outerTabs = exists
+      ? get().outerTabs
+      : [...get().outerTabs, { kind: 'host', id: hostId, hostId, label } as OuterTab];
     let outerLayout = get().outerLayout;
     if (!outerLayout) outerLayout = makeGroup(hostId);
     else if (!collectLeaves(outerLayout).includes(hostId)) outerLayout = addTabToFirstGroup(outerLayout, hostId);
@@ -804,9 +810,32 @@ export const useStore = create<AppState>((set, get) => ({
     return tab.id;
   },
 
+  /** 插件动态设备一键连接：令牌由插件后端 ctx.ssh.requestConnect 产生（一次性） */
+  openDynamicTerminal: (token, name) => {
+    const tab: TerminalTab = {
+      id: `tab-${Date.now()}-${tabSeq++}`,
+      kind: 'web',
+      hostId: 0,
+      hostName: name,
+      sessionId: null,
+      streamId: null,
+      status: 'connecting',
+      connectToken: token,
+    };
+    const hostId = String(tab.hostId);
+    const existing = get().hostLayouts[hostId];
+    const newLayout = existing ? addTabToFirstGroup(existing, tab.id) : makeGroup(tab.id);
+    set({
+      tabs: [...get().tabs, tab],
+      hostLayouts: { ...get().hostLayouts, [hostId]: newLayout },
+      activeTabId: tab.id,
+    });
+    get().openHostOuter(hostId, name);
+    return tab.id;
+  },
+
   /** 组内加号：在该组新建终端（不分屏，激活新终端） */
-  addTerminalToGroup: (hostId, groupId) => {
-    const layout = get().hostLayouts[hostId];
+  addTerminalToGroup: (hostId, groupId) => {    const layout = get().hostLayouts[hostId];
     if (!layout) return null;
     const host = get().hosts.find((h) => String(h.id) === hostId);
     if (!host) return null;

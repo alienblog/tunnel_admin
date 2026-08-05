@@ -6,7 +6,7 @@ import '@xterm/xterm/css/xterm.css';
 import { THEMES } from '../themes';
 import ReplayOverlay from './ReplayOverlay';
 import { api } from '../api';
-import { ws } from '../ws';
+import { ws, type ClientMsg } from '../ws';
 import { useStore, type Rect, type TerminalTab } from '../store';
 
 
@@ -126,6 +126,14 @@ function TerminalViewInner({ tab, rect }: { tab: TerminalTab; rect: Rect | null 
 
   const isActive = activeTabId === tab.id;
   const isAgent = tab.kind === 'agent';
+  const isDynamic = !!tab.connectToken;
+  type ClientMsgOpen = Extract<ClientMsg, { type: 'terminal:open' }>;
+
+  /** terminal:open 消息体（动态连接走一次性 connectToken，常规走 hostId） */
+  const openPayload = (cols: number, rows: number): ClientMsgOpen =>
+    isDynamic
+      ? { type: 'terminal:open', reqId: tab.id, hostId: tab.hostId, cols, rows, tmuxId: tab.id, connectToken: tab.connectToken }
+      : { type: 'terminal:open', reqId: tab.id, hostId: tab.hostId, cols, rows, tmuxId: tab.id };
 
   const closeCompletion = (): void => {
     completionRef.current = null;
@@ -484,14 +492,7 @@ function TerminalViewInner({ tab, rect }: { tab: TerminalTab; rect: Rect | null 
       reconnectTimerRef.current = window.setTimeout(() => {
         if (!shouldReconnectRef.current) return;
         streamIdRef.current = null;
-        ws.send({
-          type: 'terminal:open',
-          reqId: tab.id,
-          hostId: tab.hostId,
-          cols: term.cols,
-          rows: term.rows,
-          tmuxId: tab.id,
-        });
+        ws.send(openPayload(term.cols, term.rows));
       }, delay);
     };
 
@@ -566,7 +567,7 @@ function TerminalViewInner({ tab, rect }: { tab: TerminalTab; rect: Rect | null 
       if (e.reqId !== undefined && e.reqId !== tab.id) return;
       setTabStatus(tab.id, { status: 'error', error: e.message });
       setConnBadge({ kind: 'error', text: e.message });
-      if (!shouldReconnectRef.current && !isAgent) {
+      if (!shouldReconnectRef.current && !isAgent && !isDynamic) {
         // 连接失败（主机不可达/正在重启）：进入自动重连
         shouldReconnectRef.current = true;
         pushToast({ hostName: tab.hostName, kind: 'warning', text: '连接失败，正在自动重连…' });
@@ -582,17 +583,10 @@ function TerminalViewInner({ tab, rect }: { tab: TerminalTab; rect: Rect | null 
     const onWsOpen = (e: Event): void => {
       const detail = (e as CustomEvent<{ reconnect?: boolean }>).detail;
       if (!detail?.reconnect) return;
-      if (isAgent || !streamIdRef.current || shouldReconnectRef.current) return;
+      if (isAgent || isDynamic || !streamIdRef.current || shouldReconnectRef.current) return;
       streamIdRef.current = null;
       setConnBadge({ kind: 'connecting', text: '连接恢复中…' });
-      ws.send({
-        type: 'terminal:open',
-        reqId: tab.id,
-        hostId: tab.hostId,
-        cols: term.cols,
-        rows: term.rows,
-        tmuxId: tab.id,
-      });
+      ws.send(openPayload(term.cols, term.rows));
     };
     window.addEventListener('ta:ws:open', onWsOpen);
 
@@ -689,14 +683,7 @@ function TerminalViewInner({ tab, rect }: { tab: TerminalTab; rect: Rect | null 
     } else if (!isAgent) {
       // 持久会话：tmuxId = tab.id（重连 attach 恢复现场）
       setConnBadge({ kind: 'connecting', text: '连接中…' });
-      ws.send({
-        type: 'terminal:open',
-        reqId: tab.id,
-        hostId: tab.hostId,
-        cols: term.cols,
-        rows: term.rows,
-        tmuxId: tab.id,
-      });
+      ws.send(openPayload(term.cols, term.rows));
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [rect, tab.id, tab.hostId, tab.sessionId, isAgent]);

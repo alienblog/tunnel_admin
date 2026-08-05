@@ -5,6 +5,7 @@ import AdmZip from 'adm-zip';
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import { decryptText, encryptText } from '../crypto.js';
 import { requireAuth } from '../routes/auth.js';
+import { queueConnect } from './connectQueue.js';
 import type { Config } from '../config.js';
 import type {
   PluginActivation,
@@ -57,8 +58,31 @@ const TA_CLIENT_JS = `(function () {
   window.ta = {
     pluginId: pluginId,
     api: api,
-    /** SSH 一键连接（Phase 2 提供） */
-    ssh: { connect: function () { return Promise.reject(new Error('ssh.connect 尚未启用')); } }
+    /** SSH 一键连接：token 由插件后端 ctx.ssh.requestConnect 产生；name 用于终端标签 */
+    ssh: {
+      connect: function (token, name) {
+        return new Promise(function (resolve, reject) {
+          var id = Math.random().toString(36).slice(2);
+          var timer = window.setTimeout(function () {
+            window.removeEventListener('message', onMsg);
+            reject(new Error('连接请求超时'));
+          }, 15000);
+          function onMsg(e) {
+            var d = e.data;
+            if (!d || d.source !== 'ta-plugin' || d.type !== 'ssh-connect-result' || d.id !== id) return;
+            window.clearTimeout(timer);
+            window.removeEventListener('message', onMsg);
+            if (d.ok) resolve(d.tabId);
+            else reject(new Error(d.error || '连接失败'));
+          }
+          window.addEventListener('message', onMsg);
+          window.parent.postMessage(
+            { source: 'ta-plugin', type: 'ssh-connect', id: id, token: token, name: name || '动态设备' },
+            '*'
+          );
+        });
+      }
+    }
   };
 })();`;
 
@@ -297,7 +321,8 @@ export class PluginManager {
     try {
       const entry = path.resolve(dir, manifest.entry);
       if (!entry.startsWith(dir + path.sep)) throw new Error('entry 路径越界');
-      const mod = (await import(pathToFileURL(entry).href)) as PluginModule | { default?: PluginModule };
+      // query 版本戳：绕过 ESM 模块缓存（插件代码更新后重载立即生效）
+      const mod = (await import(`${pathToFileURL(entry).href}?v=${Date.now()}`)) as PluginModule | { default?: PluginModule };
       const pluginMod = (mod as { default?: PluginModule }).default ?? (mod as PluginModule);
       const activate = pluginMod?.activate;
       if (typeof activate !== 'function') throw new Error('插件入口缺少 activate(ctx) 导出');
@@ -364,7 +389,12 @@ export class PluginManager {
         routes.get(method)!.set(routePath.replace(/\/+$/, '') || '/', handler);
       },
       db: this.deps.db,
-      ssh: undefined, // Phase 2
+      ssh: {
+        requestConnect: (info) => {
+          if (!info?.host || !info?.username) throw new Error('requestConnect 需要 host/username');
+          return { token: queueConnect(info) };
+        },
+      },
     };
     return {
       info,

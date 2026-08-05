@@ -109,9 +109,15 @@ export class SshManager {
    * 建立 SSH 连接（支持单层或多层跳板机链）。
    * 返回的 session 已注册到池中；调用方负责在会话结束时 disconnect()。
    * onLog 用于在连接过程中输出进度日志（Web 端显示）。
+   * credsOverride：动态设备（插件）直传明文凭据，跳过 hosts 表加密字段解密。
    */
-  async connect(host: HostRow, opts: ConnectOptions, onLog?: (msg: string) => void): Promise<SshSession> {
-    const creds = decryptHostCreds(host, this.masterKey, this.db);
+  async connect(
+    host: HostRow,
+    opts: ConnectOptions,
+    onLog?: (msg: string) => void,
+    credsOverride?: HostCreds,
+  ): Promise<SshSession> {
+    const creds = credsOverride ?? decryptHostCreds(host, this.masterKey, this.db);
     // 凭据引用时用凭据的 username
     const username = (creds as HostCreds & { username?: string }).username ?? host.username;
     let sock: Readable | undefined;

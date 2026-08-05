@@ -33,7 +33,7 @@ export interface SessionInfo {
 }
 
 export type ClientMsg =
-  | { type: 'terminal:open'; reqId: string; hostId: number; cols: number; rows: number; tmuxId?: string }
+  | { type: 'terminal:open'; reqId: string; hostId: number; cols: number; rows: number; tmuxId?: string; connectToken?: string }
   | { type: 'terminal:close'; streamId: string; tmuxId?: string }
   | { type: 'terminal:attach'; reqId: string; sessionId: string; cols: number; rows: number }
   | { type: 'terminal:input'; streamId: string; data: string }

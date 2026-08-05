@@ -1,7 +1,9 @@
 import crypto from 'node:crypto';
 import type { Channel } from 'ssh2';
 import type { FastifyInstance } from 'fastify';
-import type { SshManager, SshSession } from './ssh/manager.js';
+import type { HostCreds, SshManager, SshSession } from './ssh/manager.js';
+import type { HostRow } from './db.js';
+import { takeConnect, type DynamicConnectInfo } from './plugins/connectQueue.js';
 import { eventBus } from './events.js';
 import { isAuthed } from './routes/auth.js';
 import type { Config } from './config.js';
@@ -14,11 +16,38 @@ import type { Config } from './config.js';
  */
 
 type ClientMsg =
-  | { type: 'terminal:open'; reqId: string; hostId: number; cols: number; rows: number; tmuxId?: string }
+  | { type: 'terminal:open'; reqId: string; hostId: number; cols: number; rows: number; tmuxId?: string; connectToken?: string }
   | { type: 'terminal:attach'; reqId: string; sessionId: string; cols: number; rows: number }
   | { type: 'terminal:input'; streamId: string; data: string }
   | { type: 'terminal:resize'; streamId: string; cols: number; rows: number }
   | { type: 'terminal:close'; streamId: string; tmuxId?: string };
+
+/** 动态设备（插件 ctx.ssh.requestConnect）→ 临时 HostRow + 明文凭据覆盖 */
+function dynamicToHost(info: DynamicConnectInfo): { host: HostRow; creds: HostCreds } {
+  const now = new Date().toISOString();
+  return {
+    host: {
+      id: 0,
+      name: info.name,
+      host: info.host,
+      port: info.port,
+      username: info.username,
+      auth_type: info.authType,
+      password_enc: null,
+      private_key_enc: null,
+      passphrase_enc: null,
+      jump_host_id: info.jumpHostId ?? null,
+      credential_id: null,
+      group: '',
+      tags: '',
+      note: '',
+      trusted: 1,
+      created_at: now,
+      updated_at: now,
+    },
+    creds: { password: info.password, privateKey: info.privateKey, passphrase: info.passphrase },
+  };
+}
 
 interface StreamRec {
   id: string;
@@ -114,15 +143,23 @@ export function registerWs(app: FastifyInstance, config: Config, manager: SshMan
       }
       switch (msg.type) {
         case 'terminal:open': {
-          const host = manager.getHostRow(msg.hostId);
-          if (!host) return send({ type: 'terminal:error', reqId: msg.reqId, message: '主机不存在' });
+          // 动态连接（插件 ta.ssh.connect）：凭据由插件后端登记的一次性令牌承载；
+          // 常规连接：按 hosts 表 id
+          let host: HostRow;
+          let creds: HostCreds | undefined;
+          if (msg.connectToken) {
+            const info = takeConnect(msg.connectToken);
+            if (!info)
+              return send({ type: 'terminal:error', reqId: msg.reqId, message: '连接令牌无效或已过期，请重新点击连接' });
+            ({ host, creds } = dynamicToHost(info));
+          } else {
+            const h = manager.getHostRow(msg.hostId);
+            if (!h) return send({ type: 'terminal:error', reqId: msg.reqId, message: '主机不存在' });
+            host = h;
+          }
           const log = (message: string): void => send({ type: 'terminal:log', reqId: msg.reqId, message });
           try {
-            const session = await manager.connect(
-              host,
-              { source: 'web' },
-              log,
-            );
+            const session = await manager.connect(host, { source: 'web' }, log, creds);
             const channel = await openShell(session, msg.cols, msg.rows, msg.tmuxId);
             const rec: StreamRec = { id: crypto.randomUUID(), session, channel, kind: 'open' };
             wireStream(rec);
