@@ -1,4 +1,4 @@
-﻿# ============================================================
+# ============================================================
 # TunnelAdmin Windows Server 发布包构建（zip，node 运行）
 # 用法：powershell -ExecutionPolicy Bypass -File scripts\build-server-win.ps1
 # 产物：release\tunneladmin-server-windows-x64.zip
@@ -48,6 +48,7 @@ Copy-Item 'web\dist\*' "$pkg\web\dist\" -Recurse -Force
     "@fastify/static": "^10.1.2",
     "@fastify/websocket": "^11.0.0",
     "@modelcontextprotocol/sdk": "^1.18.0",
+    "adm-zip": "^0.5.18",
     "better-sqlite3": "^12.2.0",
     "fastify": "^5.2.0",
     "ssh2": "^1.16.0",
