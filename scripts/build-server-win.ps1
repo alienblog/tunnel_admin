@@ -1,4 +1,4 @@
-# ============================================================
+﻿# ============================================================
 # TunnelAdmin Windows Server 发布包构建（zip，node 运行）
 # 用法：powershell -ExecutionPolicy Bypass -File scripts\build-server-win.ps1
 # 产物：release\tunneladmin-server-windows-x64.zip
