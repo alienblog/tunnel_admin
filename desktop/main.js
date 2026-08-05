@@ -5,7 +5,7 @@
  * - 数据目录指向 Electron userData（~/.config/tunneladmin）
  * - 加载 http://127.0.0.1:<port>，关闭时结束 server 子进程
  */
-const { app, BrowserWindow, dialog, ipcMain, shell, session } = require('electron');
+const { app, BrowserWindow, dialog, ipcMain, shell, session, Menu } = require('electron');
 const path = require('node:path');
 const fs = require('node:fs');
 const { launchServer } = require('./server-launch');
@@ -59,6 +59,18 @@ if (!gotLock) {
   });
 
   app.whenReady().then(async () => {
+    // 自定义菜单：不包含 Edit 菜单（复制/粘贴加速键 Ctrl+C/V/X/A 会在页面之前拦截按键，
+    // 导致终端收不到 Ctrl+C，TUI 程序（omp 等）无法中断）。表单/终端的复制粘贴由
+    // Chromium 默认编辑行为与 xterm.js 自行处理，无需菜单加速键。
+    Menu.setApplicationMenu(
+      Menu.buildFromTemplate([
+        ...(process.platform === 'darwin' ? [{ role: 'appMenu' }] : []),
+        { role: 'fileMenu' },
+        { role: 'viewMenu' },
+        { role: 'windowMenu' },
+      ]),
+    );
+
     // 剪贴板权限：右键复制/粘贴（navigator.clipboard.readText/writeText）需要
     session.defaultSession.setPermissionRequestHandler((_wc, permission, callback) => {
       callback(permission === 'clipboard-read' || permission === 'clipboard-sanitized-write');
@@ -147,6 +159,8 @@ if (!gotLock) {
         contextIsolation: true,
         nodeIntegration: false,
         preload: path.join(__dirname, 'preload.js'),
+        // 窗口最小化/失焦时保持渲染（xterm 的 rAF 不被节流，TUI 恢复不冻结）
+        backgroundThrottling: false,
       },
     });
     win.loadURL(`http://127.0.0.1:${port}`);

@@ -1,7 +1,7 @@
 {
   "name": "tunneladmin",
   "private": true,
-  "version": "0.2.9",
+  "version": "0.2.10",
   "description": "Web SSH 连接管理器 + MCP server",
   "workspaces": [
     "server",
@@ -31,6 +31,7 @@
     "@fastify/static": "^10.1.2",
     "@fastify/websocket": "^11.0.0",
     "@modelcontextprotocol/sdk": "^1.18.0",
+    "adm-zip": "^0.5.18",
     "better-sqlite3": "^12.2.0",
     "fastify": "^5.2.0",
     "ssh2": "^1.16.0",
