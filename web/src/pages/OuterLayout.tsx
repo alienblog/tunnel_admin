@@ -77,9 +77,14 @@ export function OuterTabIcon({ tab }: { tab: OuterTab }) {
     );
   }
   if (tab.kind === 'plugin' || tab.kind === 'plugins-manage') {
+    const icon = tab.kind === 'plugin' ? useStore.getState().plugins.find((p) => p.id === tab.pluginId)?.icon : undefined;
     return (
       <svg viewBox="0 0 16 16" className="h-3.5 w-3.5 shrink-0 text-[#4fc1ff]" fill="currentColor">
-        <path d="M6.25 1.5A1.75 1.75 0 004.5 3.25v.5H3.25A1.75 1.75 0 001.5 5.5v1.25h.75a1.25 1.25 0 010 2.5h-.75v1.25a1.75 1.75 0 001.75 1.75h1.25v.75a1.25 1.25 0 002.5 0v-.75h2.5v.75a1.25 1.25 0 002.5 0v-.75h1.25a1.75 1.75 0 001.75-1.75v-1.25h-.75a1.25 1.25 0 010-2.5h.75V5.5a1.75 1.75 0 00-1.75-1.75h-1.25v-.5a1.75 1.75 0 00-3.5 0v.5h-2.5v-.5a1.75 1.75 0 00-1.75-1.75z" />
+        {icon ? (
+          <path d={icon} />
+        ) : (
+          <path d="M6.25 1.5A1.75 1.75 0 004.5 3.25v.5H3.25A1.75 1.75 0 001.5 5.5v1.25h.75a1.25 1.25 0 010 2.5h-.75v1.25a1.75 1.75 0 001.75 1.75h1.25v.75a1.25 1.25 0 002.5 0v-.75h2.5v.75a1.25 1.25 0 002.5 0v-.75h1.25a1.75 1.75 0 001.75-1.75v-1.25h-.75a1.25 1.25 0 010-2.5h.75V5.5a1.75 1.75 0 00-1.75-1.75h-1.25v-.5a1.75 1.75 0 00-3.5 0v.5h-2.5v-.5a1.75 1.75 0 00-1.75-1.75z" />
+        )}
       </svg>
     );
   }

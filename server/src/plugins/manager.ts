@@ -171,7 +171,7 @@ export class PluginManager {
     });
     app.post('/api/plugins/reload', async (req, reply) => {
       if (!requireAuth(req, reply, this.config)) return;
-      await this.rescan();
+      await this.rescan(true);
       return { ok: true };
     });
     app.get('/api/plugins/devdirs', async (req, reply) => {
@@ -245,7 +245,7 @@ export class PluginManager {
 
   /* ---------- 扫描与加载 ---------- */
 
-  async rescan(): Promise<void> {
+  async rescan(force = false): Promise<void> {
     if (this.loading) return;
     this.loading = true;
     try {
@@ -278,13 +278,14 @@ export class PluginManager {
       // 加载/重载
       for (const [id, { dir, source }] of dirs) {
         const cur = this.loaded.get(id);
-        if (cur && cur.dir === dir && cur.info.enabled !== false) {
+        if (cur && cur.dir === dir && !force && cur.info.enabled) {
           // 已加载且未禁用：跳过（错误态保留在 info.error 供查看）
           continue;
         }
+        if (cur) this.disposePlugin(cur); // 强制重载：先清理旧实例（定时器/路由/存储句柄）
         const ok = await this.loadPlugin(id, dir, source);
         if (!ok && cur) {
-          // 重载失败：保留旧实例
+          // 重载失败：保留旧实例（已 dispose，仅保留错误信息展示）
           this.loaded.set(id, cur);
         }
       }
@@ -308,6 +309,7 @@ export class PluginManager {
       name: manifest.name,
       version: manifest.version,
       description: manifest.description ?? '',
+      icon: manifest.icon,
       source,
       dir,
       enabled,

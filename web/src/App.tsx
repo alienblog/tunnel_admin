@@ -8,7 +8,7 @@ import Login from './pages/Login';
 import Terminals from './pages/Terminals';
 import ApprovalModal from './components/ApprovalModal';
 
-const NAV: Array<{ view: View; label: string; icon: string }> = [
+const NAV: Array<{ view: View; label: string; icon: string; iconPath?: string }> = [
   { view: 'terminals', label: '终端', icon: 'terminal' },
   { view: 'hosts', label: '主机', icon: 'server' },
   { view: 'sftp', label: '文件', icon: 'folder' },
@@ -16,14 +16,23 @@ const NAV: Array<{ view: View; label: string; icon: string }> = [
 ];
 
 /** 动态 NAV：基础项 + 已启用且声明了页面的插件（每插件取第一个 ui 入口） */
-function navItems(plugins: PluginInfo[]): Array<{ view: View; label: string; icon: string }> {
+function navItems(plugins: PluginInfo[]): Array<{ view: View; label: string; icon: string; iconPath?: string }> {
   const items = [...NAV];
   for (const p of plugins) {
     if (p.enabled && !p.error && p.ui.length > 0) {
-      items.push({ view: `plugin:${p.id}` as View, label: p.ui[0].label, icon: 'puzzle' });
+      items.push({ view: `plugin:${p.id}` as View, label: p.ui[0].label, icon: 'puzzle', iconPath: p.icon });
     }
   }
   return items;
+}
+
+/** 插件图标：有自定义 icon path 渲染它，否则宿主拼图 */
+function PluginIcon({ iconPath, className }: { iconPath?: string; className: string }) {
+  return (
+    <svg viewBox="0 0 16 16" className={className} fill="currentColor">
+      {iconPath ? <path d={iconPath} /> : <path d="M6.25 1.5A1.75 1.75 0 004.5 3.25v.5H3.25A1.75 1.75 0 001.5 5.5v1.25h.75a1.25 1.25 0 010 2.5h-.75v1.25a1.75 1.75 0 001.75 1.75h1.25v.75a1.25 1.25 0 002.5 0v-.75h2.5v.75a1.25 1.25 0 002.5 0v-.75h1.25a1.75 1.75 0 001.75-1.75v-1.25h-.75a1.25 1.25 0 010-2.5h.75V5.5a1.75 1.75 0 00-1.75-1.75h-1.25v-.5a1.75 1.75 0 00-3.5 0v.5h-2.5v-.5a1.75 1.75 0 00-1.75-1.75z" />}
+    </svg>
+  );
 }
 
 /** 底部工具按钮：点击在外层打开工具 tab */
@@ -135,7 +144,7 @@ function ActivityBar({
           }`}
         >
           {view === n.view && !collapsed && <span className="absolute top-0 left-0 h-full w-0.5 bg-white" />}
-          {ICONS[n.icon]}
+          {n.iconPath ? <PluginIcon iconPath={n.iconPath} className="h-5 w-5" /> : ICONS[n.icon]}
         </button>
       ))}
       <div className="flex-1" />

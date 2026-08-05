@@ -9,6 +9,8 @@ export interface PluginManifest {
   name: string;
   version: string;
   description?: string;
+  /** 图标：16×16 viewBox 的 SVG path d（单色，跟随 currentColor）；缺省用宿主拼图图标 */
+  icon?: string;
   /** 后端入口 JS（相对插件根目录，如 server/index.js） */
   entry: string;
   /** 前端 UI 入口（相对插件根目录，如 web/index.html）；空数组 = 无页面 */
@@ -31,6 +33,8 @@ export interface PluginInfo {
   name: string;
   version: string;
   description: string;
+  /** 图标 SVG path d（可空） */
+  icon?: string;
   source: PluginSource;
   dir: string;
   enabled: boolean;

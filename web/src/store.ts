@@ -10,6 +10,8 @@ export interface PluginInfo {
   name: string;
   version: string;
   description: string;
+  /** 图标 SVG path d（16×16，跟随 currentColor；可空=宿主拼图） */
+  icon?: string;
   source: 'installed' | 'dev';
   dir: string;
   enabled: boolean;
