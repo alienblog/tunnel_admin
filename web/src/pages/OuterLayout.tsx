@@ -113,7 +113,10 @@ function OuterGroupPanel({ node }: { node: Extract<LayoutNode, { type: 'group' }
           const tab = outerTabs.find((t) => t.id === id);
           if (!tab) return null;
           const active = activeId === id;
-          const label = tab.kind === 'host' ? (hosts.find((h) => String(h.id) === tab.hostId)?.name ?? tab.hostId) : outerLabel(tab);
+          const label =
+            tab.kind === 'host'
+              ? tab.label ?? hosts.find((h) => String(h.id) === tab.hostId)?.name ?? tab.hostId
+              : outerLabel(tab);
           return (
             <div
               key={id}

@@ -567,7 +567,8 @@ export const useStore = create<AppState>((set, get) => ({
   openHostOuter: (hostId, label) => {
     const exists = get().outerTabs.some((t) => t.kind === 'host' && t.hostId === hostId);
     const outerTabs = exists
-      ? get().outerTabs
+      ? // 已存在：更新 label（动态设备重连时名称跟随最新设备）
+        get().outerTabs.map((t) => (t.kind === 'host' && t.hostId === hostId && label ? { ...t, label } : t))
       : [...get().outerTabs, { kind: 'host', id: hostId, hostId, label } as OuterTab];
     let outerLayout = get().outerLayout;
     if (!outerLayout) outerLayout = makeGroup(hostId);
@@ -814,25 +815,27 @@ export const useStore = create<AppState>((set, get) => ({
 
   /** 插件动态设备一键连接：令牌由插件后端 ctx.ssh.requestConnect 产生（一次性） */
   openDynamicTerminal: (token, name) => {
+    // 动态设备无 hosts 记录：hostId 用唯一负值（每设备独立布局与外层 tab，避免共用 '0' 串名）
+    const hostId = -(Date.now() % 1_000_000) - tabSeq;
     const tab: TerminalTab = {
       id: `tab-${Date.now()}-${tabSeq++}`,
       kind: 'web',
-      hostId: 0,
+      hostId,
       hostName: name,
       sessionId: null,
       streamId: null,
       status: 'connecting',
       connectToken: token,
     };
-    const hostId = String(tab.hostId);
-    const existing = get().hostLayouts[hostId];
+    const key = String(tab.hostId);
+    const existing = get().hostLayouts[key];
     const newLayout = existing ? addTabToFirstGroup(existing, tab.id) : makeGroup(tab.id);
     set({
       tabs: [...get().tabs, tab],
-      hostLayouts: { ...get().hostLayouts, [hostId]: newLayout },
+      hostLayouts: { ...get().hostLayouts, [key]: newLayout },
       activeTabId: tab.id,
     });
-    get().openHostOuter(hostId, name);
+    get().openHostOuter(key, name);
     return tab.id;
   },
 

@@ -276,7 +276,7 @@ export default function Terminals() {
   const rightTab = outerTabs.find((t) => t.id === rightDockId) ?? null;
   const rightLabel = rightTab
     ? rightTab.kind === 'host'
-      ? (hosts.find((h) => String(h.id) === rightTab.hostId)?.name ?? rightTab.hostId)
+      ? rightTab.label ?? hosts.find((h) => String(h.id) === rightTab.hostId)?.name ?? rightTab.hostId
       : outerLabel(rightTab)
     : '';
 
