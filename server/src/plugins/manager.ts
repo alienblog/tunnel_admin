@@ -136,7 +136,7 @@ export class PluginManager {
           return reply.code(400).send({ error: '插件包大小不合法' });
         }
         const id = this.extractPackage(buf, filename);
-        await this.rescan();
+        await this.rescan(true); // 覆盖安装后强制重载内存实例（否则仍显示旧版本）
         return { ok: true, id };
       } catch (e) {
         return reply.code(400).send({ error: e instanceof Error ? e.message : String(e) });
