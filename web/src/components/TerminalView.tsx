@@ -330,17 +330,23 @@ function TerminalViewInner({ tab, rect }: { tab: TerminalTab; rect: Rect | null 
     };
     container.addEventListener('wheel', onWheel, { passive: false });
 
+    /** 容器尺寸是否可 fit：隐藏（display:none → 0）或布局未就绪时跳过，
+     *  避免把 xterm 缩到 10×6 并发送假 terminal:resize（SIGWINCH 导致 shell 重排） */
+    const canFit = (el: HTMLElement): boolean => el.clientWidth >= 100 && el.clientHeight >= 50;
+
     try {
-      fit.fit();
+      if (canFit(container)) fit.fit();
     } catch {
       // 容器尚未布局完成时忽略
     }
 
     const ro = new ResizeObserver(() => {
+      // 隐藏（切走 tab，尺寸归零）时不 fit：xterm 保持原尺寸，切回时无假 resize
+      if (!canFit(container)) return;
       try {
         fit.fit();
       } catch {
-        // 隐藏状态（display:none）下无法 fit
+        // 忽略
       }
     });
     ro.observe(container);
@@ -684,7 +690,8 @@ function TerminalViewInner({ tab, rect }: { tab: TerminalTab; rect: Rect | null 
     const term = termRef.current;
     if (!term) return;
     try {
-      fitRef.current?.fit();
+      const el = containerRef.current;
+      if (el && el.clientWidth >= 100 && el.clientHeight >= 50) fitRef.current?.fit();
     } catch {
       // 容器尚未布局完成时忽略（ResizeObserver 会补发）
     }
@@ -720,6 +727,8 @@ function TerminalViewInner({ tab, rect }: { tab: TerminalTab; rect: Rect | null 
     if (isActive && fitRef.current) {
       requestAnimationFrame(() => {
         try {
+          const el = containerRef.current;
+          if (!el || el.clientWidth < 100 || el.clientHeight < 50) return;
           fitRef.current?.fit();
         } catch {
           // 忽略
