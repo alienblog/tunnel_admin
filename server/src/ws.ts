@@ -54,19 +54,57 @@ interface StreamRec {
   session: SshSession;
   channel: Channel;
   kind: 'open' | 'attach';
+  /** 前端 tab id（terminal:open 的 tmuxId）：断线后凭此复用保留的会话 */
+  tmuxId?: string;
 }
 
 export function registerWs(app: FastifyInstance, config: Config, manager: SshManager): void {
   const streams = new Map<string, StreamRec>();
 
   /**
-   * 打开交互 shell。tmuxId 存在时通过 tmux 持久会话包装：
-   * 断开（浏览器关闭/网络中断）后会话保持，重连 attach 恢复现场。
-   * tmux 不可用时降级为普通 shell。
+   * 断线保留的会话（tmuxId → 会话+channel）：
+   * 前端 ws 断开时 SSH 会话与交互 shell 原样保留（channel 不 end、session 不断开），
+   * 前端重连后 terminal:open（同 tmuxId）直接重新挂接，零新增输出（无新提示符）。
+   * 超时（DETACH_TTL）未重连则回收。
+   */
+  const detached = new Map<string, { session: SshSession; channel: Channel; timer: ReturnType<typeof setTimeout> }>();
+  /** 动态设备（插件）凭据缓存：hostId → 凭据，供同主机多开终端（加号）复用；TTL 过期清除 */
+  const dynamicCreds = new Map<number, { host: HostRow; creds: HostCreds | undefined; timer: ReturnType<typeof setTimeout> }>();
+  const DETACH_TTL_MS = 5 * 60 * 1000;
+  const DYNAMIC_CRED_TTL_MS = 10 * 60 * 1000;
+
+  function detachChannel(tmuxId: string, rec: StreamRec): void {
+    const prev = detached.get(tmuxId);
+    if (prev) {
+      clearTimeout(prev.timer);
+      try {
+        prev.channel.end();
+      } catch {
+        // 已关闭
+      }
+      manager.disconnect(prev.session.id);
+    }
+    const timer = setTimeout(() => {
+      const d = detached.get(tmuxId);
+      if (!d) return;
+      detached.delete(tmuxId);
+      try {
+        d.channel.end();
+      } catch {
+        // 已关闭
+      }
+      manager.disconnect(d.session.id);
+    }, DETACH_TTL_MS);
+    detached.set(tmuxId, { session: rec.session, channel: rec.channel, timer });
+  }
+
+  /**
+   * 打开交互 shell。tmuxId 断线保留：
+   * 前端 ws 断开时 SSH 会话与 channel 由 detachChannel 保留，重连 open 复用（不新开 shell）。
    */
   function openShell(session: SshSession, cols: number, rows: number, tmuxId?: string): Promise<Channel> {
     // 不使用远端 tmux 包装（tmux 会捕获滚轮/鼠标，且嵌套 TUI 有兼容问题）。
-    // 直接打开交互 shell；重连时由前端重新发起 open（新 shell，xterm 历史保留显示）。
+    // 直接打开交互 shell；断线恢复由 detachChannel 保留 channel 复用实现（非 tmux）。
     void tmuxId;
     return new Promise((resolve, reject) => {
       session.client.shell({ term: 'xterm-256color', cols, rows }, (err, stream) => {
@@ -143,7 +181,32 @@ export function registerWs(app: FastifyInstance, config: Config, manager: SshMan
       }
       switch (msg.type) {
         case 'terminal:open': {
+          // 断线重连（前端 ws 断开后重新 open，同 tmuxId）：优先复用保留的会话，
+          // 原 SSH 会话与 shell 原样继续（无新提示符）；channel 已死则走新连接。
+          if (msg.tmuxId) {
+            const det = detached.get(msg.tmuxId);
+            if (det && !det.channel.destroyed) {
+              clearTimeout(det.timer);
+              detached.delete(msg.tmuxId);
+              const rec: StreamRec = { id: crypto.randomUUID(), session: det.session, channel: det.channel, kind: 'open', tmuxId: msg.tmuxId };
+              wireStream(rec);
+              send({ type: 'terminal:ready', reqId: msg.reqId, streamId: rec.id, sessionId: det.session.id });
+              break;
+            }
+            if (det) {
+              // channel 已死（SSH 断开）：清除残留
+              clearTimeout(det.timer);
+              detached.delete(msg.tmuxId);
+              try {
+                det.channel.end();
+              } catch {
+                // 已关闭
+              }
+              manager.disconnect(det.session.id);
+            }
+          }
           // 动态连接（插件 ta.ssh.connect）：凭据由插件后端登记的一次性令牌承载；
+          // 令牌消费后（重连/同主机多开）走 dynamicCreds 缓存；
           // 常规连接：按 hosts 表 id
           let host: HostRow;
           let creds: HostCreds | undefined;
@@ -152,6 +215,10 @@ export function registerWs(app: FastifyInstance, config: Config, manager: SshMan
             if (!info)
               return send({ type: 'terminal:error', reqId: msg.reqId, message: '连接令牌无效或已过期，请重新点击连接' });
             ({ host, creds } = dynamicToHost(info));
+          } else if (msg.hostId < 0 && dynamicCreds.has(msg.hostId)) {
+            const dc = dynamicCreds.get(msg.hostId)!;
+            host = dc.host;
+            creds = dc.creds;
           } else {
             const h = manager.getHostRow(msg.hostId);
             if (!h) return send({ type: 'terminal:error', reqId: msg.reqId, message: '主机不存在' });
@@ -161,9 +228,18 @@ export function registerWs(app: FastifyInstance, config: Config, manager: SshMan
           try {
             const session = await manager.connect(host, { source: 'web' }, log, creds);
             const channel = await openShell(session, msg.cols, msg.rows, msg.tmuxId);
-            const rec: StreamRec = { id: crypto.randomUUID(), session, channel, kind: 'open' };
+            const rec: StreamRec = { id: crypto.randomUUID(), session, channel, kind: 'open', tmuxId: msg.tmuxId };
             wireStream(rec);
             send({ type: 'terminal:ready', reqId: msg.reqId, streamId: rec.id, sessionId: session.id });
+            // 动态设备凭据缓存：同主机多开（组内加号）与重连复用；TTL 过期清除
+            if (msg.connectToken && msg.hostId < 0) {
+              const prev = dynamicCreds.get(msg.hostId);
+              if (prev) clearTimeout(prev.timer);
+              const timer = setTimeout(() => {
+                dynamicCreds.delete(msg.hostId);
+              }, DYNAMIC_CRED_TTL_MS);
+              dynamicCreds.set(msg.hostId, { host, creds, timer });
+            }
           } catch (err) {
             send({ type: 'terminal:error', reqId: msg.reqId, message: `连接失败: ${(err as Error).message}` });
           }
@@ -232,6 +308,11 @@ export function registerWs(app: FastifyInstance, config: Config, manager: SshMan
         const rec = streams.get(streamId);
         if (!rec) continue;
         streams.delete(streamId);
+        // web 交互终端（open + tmuxId）：保留 SSH 会话与 shell，供前端重连复用
+        if (rec.kind === 'open' && rec.tmuxId) {
+          detachChannel(rec.tmuxId, rec);
+          continue;
+        }
         try {
           rec.channel.end();
         } catch {

@@ -126,14 +126,23 @@ function TerminalViewInner({ tab, rect }: { tab: TerminalTab; rect: Rect | null 
 
   const isActive = activeTabId === tab.id;
   const isAgent = tab.kind === 'agent';
-  const isDynamic = !!tab.connectToken;
   type ClientMsgOpen = Extract<ClientMsg, { type: 'terminal:open' }>;
 
-  /** terminal:open 消息体（动态连接走一次性 connectToken，常规走 hostId） */
-  const openPayload = (cols: number, rows: number): ClientMsgOpen =>
-    isDynamic
-      ? { type: 'terminal:open', reqId: tab.id, hostId: tab.hostId, cols, rows, tmuxId: tab.id, connectToken: tab.connectToken }
-      : { type: 'terminal:open', reqId: tab.id, hostId: tab.hostId, cols, rows, tmuxId: tab.id };
+  /** terminal:open 消息体：动态连接首次带一次性 connectToken；
+   *  ready 后 token 已消费清除，重连/多开走服务端会话复用或凭据缓存（不带 token） */
+  const openPayload = (cols: number, rows: number): ClientMsgOpen => {
+    const cur = useStore.getState().tabs.find((t) => t.id === tab.id);
+    const token = cur?.connectToken;
+    return {
+      type: 'terminal:open',
+      reqId: tab.id,
+      hostId: tab.hostId,
+      cols,
+      rows,
+      tmuxId: tab.id,
+      ...(token ? { connectToken: token } : {}),
+    };
+  };
 
   const closeCompletion = (): void => {
     completionRef.current = null;
@@ -548,7 +557,7 @@ function TerminalViewInner({ tab, rect }: { tab: TerminalTab; rect: Rect | null 
     const offReady = ws.on('terminal:ready', (e) => {
       if (e.reqId !== tab.id) return;
       streamIdRef.current = e.streamId;
-      setTabStatus(tab.id, { status: 'connected', streamId: e.streamId });
+      setTabStatus(tab.id, { status: 'connected', streamId: e.streamId, connectToken: undefined });
       const wasReconnect = reconnectAttemptRef.current > 0;
       stopReconnect();
       // 已连接徽标 2 秒后淡出（重连成功时显示「已重连」）
@@ -567,7 +576,8 @@ function TerminalViewInner({ tab, rect }: { tab: TerminalTab; rect: Rect | null 
       if (e.reqId !== undefined && e.reqId !== tab.id) return;
       setTabStatus(tab.id, { status: 'error', error: e.message });
       setConnBadge({ kind: 'error', text: e.message });
-      if (!shouldReconnectRef.current && !isAgent && !isDynamic) {
+      // 动态设备（负 hostId，插件连接）：无 hosts 记录且 token 一次性，重试无意义
+      if (!shouldReconnectRef.current && !isAgent && tab.hostId >= 0) {
         // 连接失败（主机不可达/正在重启）：进入自动重连
         shouldReconnectRef.current = true;
         pushToast({ hostName: tab.hostName, kind: 'warning', text: '连接失败，正在自动重连…' });
@@ -579,11 +589,12 @@ function TerminalViewInner({ tab, rect }: { tab: TerminalTab; rect: Rect | null 
       setConnBadge({ kind: 'connecting', text: e.message });
     });
 
-    // ws 重连（服务端重启 / 网络闪断）：服务端已清理旧 stream，重新 open 恢复现场（xterm 历史保留）
+    // ws 重连（服务端重启 / 网络闪断）：服务端已清理旧 stream，重新 open 恢复现场
+    // （动态终端 token 已消费：不带 token，服务端按 tmuxId 复用保留会话 / 凭据缓存）
     const onWsOpen = (e: Event): void => {
       const detail = (e as CustomEvent<{ reconnect?: boolean }>).detail;
       if (!detail?.reconnect) return;
-      if (isAgent || isDynamic || !streamIdRef.current || shouldReconnectRef.current) return;
+      if (isAgent || !streamIdRef.current || shouldReconnectRef.current) return;
       streamIdRef.current = null;
       setConnBadge({ kind: 'connecting', text: '连接恢复中…' });
       ws.send(openPayload(term.cols, term.rows));
@@ -716,6 +727,23 @@ function TerminalViewInner({ tab, rect }: { tab: TerminalTab; rect: Rect | null 
       });
     }
   }, [isActive]);
+
+  // 焦点跟随：本终端激活且可见（点击主机外层 tab / 终端 tab / 新开终端）时，
+  // 自动聚焦 xterm，无需鼠标再点一次即可直接输入。
+  useEffect(() => {
+    if (!isActive || !rect) return;
+    const term = termRef.current;
+    if (!term) return;
+    // 下一帧聚焦：避免点击 tab 的 DOM 事件把焦点抢走
+    const raf = requestAnimationFrame(() => {
+      try {
+        term.focus();
+      } catch {
+        // 忽略
+      }
+    });
+    return () => cancelAnimationFrame(raf);
+  }, [isActive, rect]);
 
   return (
     <div className="relative group" style={rect ? { position: 'absolute', left: rect.x, top: rect.y, width: rect.w, height: rect.h } : { display: 'none' }}>

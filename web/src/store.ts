@@ -433,7 +433,7 @@ interface AppState {
   /** 在指定组的 tab 栏加号：组内新建终端（不分屏） */
   addTerminalToGroup: (hostId: string, groupId: string) => string | null;
   addAgentTab: (session: SessionInfo, opts?: { activate?: boolean }) => string;
-  setTabStatus: (id: string, patch: Partial<Pick<TerminalTab, 'status' | 'streamId' | 'error'>>) => void;
+  setTabStatus: (id: string, patch: Partial<Pick<TerminalTab, 'status' | 'streamId' | 'error' | 'connectToken'>>) => void;
   /** 关闭终端并从布局移除 */
   closeTab: (id: string) => void;
   /** 关闭主机工作区（该主机全部终端） */
@@ -610,7 +610,29 @@ export const useStore = create<AppState>((set, get) => ({
       const gid = findGroupIdOfTab(layout, id);
       if (gid) outerLayout = setGroupActive(layout, gid, id);
     }
-    set({ activeOuterId: id, outerLayout });
+    const patch: Partial<AppState> = { activeOuterId: id, outerLayout };
+    // 主机工作区：同步激活其当前终端（点击主机 tab 后焦点直接落到终端）
+    const outer = get().outerTabs.find((t) => t.id === id);
+    if (outer?.kind === 'host') {
+      const hLayout = get().hostLayouts[outer.hostId];
+      if (hLayout) {
+        const leaves = collectLeaves(hLayout);
+        const last = get().lastActiveByHost[Number(outer.hostId)];
+        const active = last && leaves.includes(last) ? last : (leaves[0] ?? null);
+        if (active) {
+          const gid = findGroupIdOfTab(hLayout, active);
+          if (gid) {
+            patch.hostLayouts = {
+              ...get().hostLayouts,
+              [outer.hostId]: setGroupActive(hLayout, gid, active),
+            };
+          }
+          patch.activeTabId = active;
+          patch.lastActiveByHost = { ...get().lastActiveByHost, [Number(outer.hostId)]: active };
+        }
+      }
+    }
+    set(patch);
   },
 
   moveOuterTab: (tabId, targetGroupId, pos) => {
@@ -839,16 +861,20 @@ export const useStore = create<AppState>((set, get) => ({
     return tab.id;
   },
 
-  /** 组内加号：在该组新建终端（不分屏，激活新终端） */
-  addTerminalToGroup: (hostId, groupId) => {    const layout = get().hostLayouts[hostId];
+  /** 组内加号：在该组新建终端（不分屏，激活新终端）。动态设备（插件连接，无 hosts 记录）
+   *  也能多开：凭据由服务端 dynamicCreds 缓存提供（连接成功后 10 分钟内有效）。 */
+  addTerminalToGroup: (hostId, groupId) => {
+    const layout = get().hostLayouts[hostId];
     if (!layout) return null;
     const host = get().hosts.find((h) => String(h.id) === hostId);
-    if (!host) return null;
-    const tab = makeTab('web', host.id, host.name, null);
+    // 动态设备：hostName 取现有终端名（hosts 无记录）
+    const existing = get().tabs.find((t) => t.hostId === Number(hostId));
+    const tab = makeTab('web', Number(hostId), host?.name ?? existing?.hostName ?? '终端', null);
     set({
       tabs: [...get().tabs, tab],
       hostLayouts: { ...get().hostLayouts, [hostId]: addTabToGroup(layout, groupId, tab.id) },
       activeTabId: tab.id,
+      lastActiveByHost: { ...get().lastActiveByHost, [hostId]: tab.id },
     });
     get().openHostOuter(hostId);
     return tab.id;
