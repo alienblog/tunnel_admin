@@ -426,9 +426,15 @@ function StatusBar() {
         <MetricsBar />
       </div>
       <StatusMcp />
-      <span className="whitespace-nowrap">v0.2.7</span>
+      <AppVersionBadge />
     </div>
   );
+}
+
+/** 状态栏应用版本（服务端 /api/me 提供；未加载到不显示） */
+function AppVersionBadge() {
+  const appVersion = useStore((s) => s.appVersion);
+  return appVersion ? <span className="whitespace-nowrap">v{appVersion}</span> : null;
 }
 
 /** 状态栏 MCP 地址：优先显示独立 MCP 端口地址（保存后自动更新），未加载时回退主服务端口 */
@@ -446,12 +452,13 @@ export default function App() {
   const [checking, setChecking] = useState(true);
 
   useEffect(() => {
-    api<{ authenticated: boolean }>('/api/me')
+    api<{ authenticated: boolean; version?: string }>('/api/me')
       .then((r) => {
         if (r.authenticated) {
           // 先恢复工作区（必须在 setAuthed 之前：setAuthed 会触发持久化订阅，避免空状态覆盖已保存数据）
           useStore.getState().restoreWorkspace();
           useStore.getState().setAuthed(true);
+          useStore.getState().setAppVersion(r.version ?? '');
           ws.connect();
           void useStore.getState().loadHosts();
           void useStore.getState().loadPlugins();

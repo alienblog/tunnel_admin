@@ -1,9 +1,12 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import fs from 'node:fs';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { hashPassword, signSession, verifyPassword, verifySession, type Config } from '../config.js';
 
 export const SESSION_COOKIE = 'ta_session';
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 /** 是否要求登录（TUNNELADMIN_AUTH=none 时免登录，桌面客户端用） */
 export function isAuthed(req: FastifyRequest, config: Config): boolean {
@@ -49,7 +52,22 @@ export function registerAuth(app: FastifyInstance, config: Config): void {
     return { ok: true };
   });
 
-  app.get('/api/me', async (req) => ({ authenticated: isAuthed(req, config), authRequired: config.authRequired }));
+  // 应用版本（根 package.json，状态栏显示；发布时随根版本号同步）
+  const appVersion = (() => {
+    try {
+      const root = path.resolve(__dirname, '../../..');
+      const pkg = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8')) as { version?: string };
+      return pkg.version ?? '';
+    } catch {
+      return '';
+    }
+  })();
+
+  app.get('/api/me', async (req) => ({
+    authenticated: isAuthed(req, config),
+    authRequired: config.authRequired,
+    version: appVersion,
+  }));
 
   // 修改 Web 登录密码（免登录模式也可设置，重启后去掉 TUNNELADMIN_AUTH=none 即生效）
   app.post('/api/password', async (req, reply) => {
