@@ -94,7 +94,11 @@ if (!gotLock) {
     };
     ipcMain.handle('ta:get-download-prefs', () => ({ ...downloadPrefs }));
     ipcMain.handle('ta:set-download-prefs', (_e, p) => {
-      downloadPrefs = { mode: p?.mode === 'default' ? 'default' : 'ask', dir: typeof p?.dir === 'string' ? p.dir : '' };
+      // 合并语义：未传的字段保留原值（如「选择默认目录」只传 dir，mode 不被重置）
+      downloadPrefs = {
+        mode: p?.mode === undefined ? downloadPrefs.mode : (p.mode === 'default' ? 'default' : 'ask'),
+        dir: typeof p?.dir === 'string' ? p.dir : downloadPrefs.dir,
+      };
       savePrefs();
       return { ...downloadPrefs };
     });
@@ -136,6 +140,58 @@ if (!gotLock) {
     });
     ipcMain.on('ta:show-item', (_e, p) => {
       if (typeof p === 'string' && p) shell.showItemInFolder(p);
+    });
+
+    // ---- 流式直写下载（桌面端主路径）----
+    // 渲染进程 fetch 分块 → IPC → 本地文件直写（不经浏览器下载/Blob 全量内存）。
+    // 目录在下载开始前决定（ask 弹框 / default 直下），重名自动追加 (1) (2)。
+    let dlSeq = 0;
+    const dlStreams = new Map(); // token → { stream, path, name }
+    ipcMain.handle('ta:download-start', async (_e, name) => {
+      const dir = await decideDir();
+      if (!dir) return { ok: false, canceled: true };
+      const base = path.basename(String(name || 'download'));
+      let finalPath = path.join(dir, base);
+      if (fs.existsSync(finalPath)) {
+        const dot = base.lastIndexOf('.');
+        const stem = dot > 0 ? base.slice(0, dot) : base;
+        const ext = dot > 0 ? base.slice(dot) : '';
+        for (let i = 1; ; i++) {
+          const cand = path.join(dir, `${stem} (${i})${ext}`);
+          if (!fs.existsSync(cand)) {
+            finalPath = cand;
+            break;
+          }
+        }
+      }
+      const token = `dl-${Date.now()}-${dlSeq++}`;
+      dlStreams.set(token, { stream: fs.createWriteStream(finalPath), path: finalPath, name: base });
+      return { ok: true, token, path: finalPath };
+    });
+    ipcMain.handle('ta:download-data', (_e, token, data) => {
+      const rec = dlStreams.get(token);
+      if (!rec) return;
+      rec.stream.write(Buffer.from(data));
+    });
+    ipcMain.handle('ta:download-end', (_e, token) => {
+      const rec = dlStreams.get(token);
+      if (!rec) return;
+      dlStreams.delete(token);
+      rec.stream.end();
+      for (const w of BrowserWindow.getAllWindows()) {
+        w.webContents.send('ta:download-done', { name: rec.name, path: rec.path });
+      }
+    });
+    ipcMain.handle('ta:download-cancel', (_e, token) => {
+      const rec = dlStreams.get(token);
+      if (!rec) return;
+      dlStreams.delete(token);
+      try {
+        rec.stream.destroy();
+      } catch {
+        // 已关闭
+      }
+      fs.unlink(rec.path, () => {});
     });
 
     let port;

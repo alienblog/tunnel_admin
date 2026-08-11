@@ -1,4 +1,4 @@
-import { useStore } from './store';
+import { useStore, type TransferRec } from './store';
 import { getDesktop } from './desktop';
 
 /**
@@ -56,7 +56,7 @@ export function uploadFileXHR(
   });
 }
 
-/** 下载（fetch 流式 + Blob 保存），自动记录传输状态 */
+/** 下载（桌面端流式直写本地文件；Web 端 fetch 流式 + Blob 浏览器下载），自动记录传输状态 */
 export async function downloadWithProgress(
   hostName: string,
   url: string,
@@ -72,15 +72,53 @@ export async function downloadWithProgress(
     transferred: 0,
     status: 'running',
   });
+  const update = (p: Partial<TransferRec>): void => useStore.getState().updateTransfer(id, p);
   // 桌面端：浏览器下载完成后记录保存路径（供传输管理器「定位文件」）
   const desktop = getDesktop();
   const unsub = desktop?.onDownloadDone((info) => {
     if (info.name === name) {
-      useStore.getState().updateTransfer(id, { localPath: info.path });
+      update({ localPath: info.path });
       unsub?.();
     }
   });
   try {
+    if (desktop) {
+      // 桌面端：开始下载前决定目录（ask 弹框 / default 直下），边读边写本地文件，
+      // 不经浏览器下载、不攒 Blob（大文件不占内存）。
+      const st = await desktop.downloadStart(name);
+      if (!st.ok || !st.token) {
+        update({ status: 'error', error: st.canceled ? '已取消（未选择保存目录）' : '无法确定保存位置' });
+        return;
+      }
+      const token = st.token;
+      try {
+        const res = await fetch(url);
+        if (!res.ok) {
+          const body = (await res.json().catch(() => ({}))) as { error?: string };
+          throw new Error(body.error ?? `下载失败 (${res.status})`);
+        }
+        const total = Number(res.headers.get('content-length') ?? 0);
+        update({ size: total });
+        const reader = res.body?.getReader();
+        if (!reader) throw new Error('响应无内容');
+        let received = 0;
+        for (;;) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          received += value.length;
+          await desktop.downloadData(token, value);
+          update({ transferred: received });
+        }
+        await desktop.downloadEnd(token);
+        update({ transferred: received, size: total || received, status: 'done', localPath: st.path, doneAt: Date.now() });
+      } catch (err) {
+        // 传输失败：删除半成品文件
+        await desktop.downloadCancel(token).catch(() => {});
+        throw err;
+      }
+      return;
+    }
+    // Web 端：fetch 全量 → Blob → 浏览器下载
     const res = await fetch(url);
     if (!res.ok) {
       const body = (await res.json().catch(() => ({}))) as { error?: string };
@@ -96,7 +134,7 @@ export async function downloadWithProgress(
       if (done) break;
       chunks.push(value);
       received += value.length;
-      useStore.getState().updateTransfer(id, { transferred: received });
+      update({ transferred: received });
     }
     const blob = new Blob(chunks as unknown as BlobPart[]);
     const a = document.createElement('a');
@@ -106,9 +144,9 @@ export async function downloadWithProgress(
     a.click();
     a.remove();
     setTimeout(() => URL.revokeObjectURL(a.href), 10000);
-    useStore.getState().updateTransfer(id, { transferred: received, size: total || received, status: 'done', doneAt: Date.now() });
+    update({ transferred: received, size: total || received, status: 'done', doneAt: Date.now() });
   } catch (err) {
-    useStore.getState().updateTransfer(id, { status: 'error', error: (err as Error).message });
+    update({ status: 'error', error: (err as Error).message });
     throw err;
   }
 }

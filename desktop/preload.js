@@ -16,4 +16,9 @@ contextBridge.exposeInMainWorld('taDesktop', {
   getDownloadPrefs: () => ipcRenderer.invoke('ta:get-download-prefs'),
   setDownloadPrefs: (p) => ipcRenderer.invoke('ta:set-download-prefs', p),
   chooseDownloadDir: () => ipcRenderer.invoke('ta:choose-download-dir'),
+  /** 流式直写下载：开始（决定目录，下载前询问）/ 数据块 / 结束 / 取消 */
+  downloadStart: (name) => ipcRenderer.invoke('ta:download-start', name),
+  downloadData: (token, data) => ipcRenderer.invoke('ta:download-data', token, data),
+  downloadEnd: (token) => ipcRenderer.invoke('ta:download-end', token),
+  downloadCancel: (token) => ipcRenderer.invoke('ta:download-cancel', token),
 });

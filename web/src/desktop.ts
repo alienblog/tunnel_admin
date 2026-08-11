@@ -4,6 +4,17 @@ export interface DownloadPrefs {
   dir: string;
 }
 
+/** 流式直写下载启动结果（桌面端） */
+export interface DesktopDownloadStart {
+  ok: boolean;
+  /** 用户取消目录选择（ask 模式弹框点了取消） */
+  canceled?: boolean;
+  /** 下载会话令牌（后续数据块/结束/取消用） */
+  token?: string;
+  /** 实际保存路径（重名自动追加 (1) (2)） */
+  path?: string;
+}
+
 /** Electron 桌面端桥（preload 注入 window.taDesktop）；Web 浏览器环境为 null */
 export interface TaDesktop {
   isDesktop: boolean;
@@ -17,6 +28,14 @@ export interface TaDesktop {
   setDownloadPrefs: (p: Partial<DownloadPrefs>) => Promise<DownloadPrefs>;
   /** 弹出系统目录选择框；取消返回 null */
   chooseDownloadDir: () => Promise<string | null>;
+  /** 流式直写下载：开始下载（内部按 prefs 决定目录，ask 模式此时弹框询问） */
+  downloadStart: (name: string) => Promise<DesktopDownloadStart>;
+  /** 写入一块数据（Uint8Array）到已启动的下载流 */
+  downloadData: (token: string, data: Uint8Array) => Promise<void>;
+  /** 结束下载（写完文件，触发 onDownloadDone 通知） */
+  downloadEnd: (token: string) => Promise<void>;
+  /** 取消下载并删除半成品文件 */
+  downloadCancel: (token: string) => Promise<void>;
 }
 
 export function getDesktop(): TaDesktop | null {
