@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   useStore,
   collectGroups,
@@ -191,20 +191,41 @@ export function HostWorkspace({ hostId }: { hostId: string }) {
   const tabs = useStore((s) => s.tabs);
   const dragTabId = useStore((s) => s.dragTabId);
   const moveTab = useStore((s) => s.moveTab);
+  // 外层布局（tab 切换/打开会变）：池 div 显示/隐藏切换后需重新测量
+  const outerLayout = useStore((s) => s.outerLayout);
   const [size, setSize] = useState<{ w: number; h: number }>({ w: 0, h: 0 });
+
+  const measure = useCallback((): void => {
+    const el = containerRef.current;
+    if (!el) return;
+    const r = el.getBoundingClientRect();
+    setSize((prev) => (prev.w === r.width && prev.h === r.height ? prev : { w: r.width, h: r.height }));
+  }, []);
 
   useEffect(() => {
     const el = containerRef.current;
     if (!el) return;
-    const measure = (): void => {
-      const r = el.getBoundingClientRect();
-      setSize((prev) => (prev.w === r.width && prev.h === r.height ? prev : { w: r.width, h: r.height }));
-    };
     measure();
     const ro = new ResizeObserver(measure);
     ro.observe(el);
     return () => ro.disconnect();
-  }, []);
+  }, [measure]);
+
+  // ResizeObserver 对「display:none → 显示」不触发（Chrome 实测）：池 div 由隐藏变为
+  // 可见时（恢复工作区后首次激活外层 tab / 切换 tab）容器尺寸从 0 变为实际值，
+  // 若不重新测量 size 卡 0 → 内层 rects 全空 → 终端全部隐藏、新开终端无法聚焦
+  // （焦点 effect 因 rect 为 null 跳过 → 光标空心、空格被焦点元素拦截）。
+  // 外层布局每次变化后重测一次（rAF 后布局稳定）+ size 为 0 时定时兜底重测。
+  useEffect(() => {
+    const raf = requestAnimationFrame(() => measure());
+    return () => cancelAnimationFrame(raf);
+  }, [outerLayout, measure]);
+
+  useEffect(() => {
+    if (size.w > 0 && size.h > 0) return;
+    const t = window.setInterval(measure, 200);
+    return () => window.clearInterval(t);
+  }, [size, measure]);
 
   const rects = useMemo(() => {
     if (!layout || size.w === 0 || size.h === 0) return new Map<string, Rect>();

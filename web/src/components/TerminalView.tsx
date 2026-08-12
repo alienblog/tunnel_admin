@@ -575,7 +575,16 @@ function TerminalViewInner({ tab, rect }: { tab: TerminalTab; rect: Rect | null 
       window.setTimeout(() => {
         if (streamIdRef.current !== e.streamId) return;
         const term = termRef.current;
-        if (term) ws.send({ type: 'terminal:resize', streamId: e.streamId, cols: term.cols, rows: term.rows });
+        if (term) {
+          ws.send({ type: 'terminal:resize', streamId: e.streamId, cols: term.cols, rows: term.rows });
+          // 强制刷新首屏：新终端 open 后渲染循环可能未启动（首屏输出挂起，
+          // 输入/滚动才恢复），scrollToBottom 触发视口重绘
+          try {
+            term.scrollToBottom();
+          } catch {
+            // 忽略
+          }
+        }
       }, 50);
     });
     const offError = ws.on('terminal:error', (e) => {
@@ -739,19 +748,42 @@ function TerminalViewInner({ tab, rect }: { tab: TerminalTab; rect: Rect | null 
 
   // 焦点跟随：本终端激活且可见（点击主机外层 tab / 终端 tab / 新开终端）时，
   // 自动聚焦 xterm，无需鼠标再点一次即可直接输入。
+  // 直接聚焦 textarea（比 term.focus() 更可靠：新终端刚 open 时 xterm 内部 focus
+  // 可能因渲染层未就绪而无效），并验证聚焦结果短时重试：
+  // Electron 中关闭 confirm 等原生对话框后 document 焦点可能未恢复
+  // （textarea 无焦点 → 光标变空心 outline、空格被焦点元素拦截），
+  // 窗口/文档恢复聚焦后重试即可命中。
   useEffect(() => {
     if (!isActive || !rect) return;
     const term = termRef.current;
     if (!term) return;
-    // 下一帧聚焦：避免点击 tab 的 DOM 事件把焦点抢走
-    const raf = requestAnimationFrame(() => {
-      try {
-        term.focus();
-      } catch {
-        // 忽略
+    const ta = (term as unknown as { textarea?: HTMLTextAreaElement }).textarea;
+    let cancelled = false;
+    let tries = 0;
+    const tryFocus = (): void => {
+      if (cancelled) return;
+      if (ta) {
+        try {
+          ta.focus();
+        } catch {
+          // 忽略
+        }
+      } else {
+        try {
+          term.focus();
+        } catch {
+          // 忽略
+        }
       }
-    });
-    return () => cancelAnimationFrame(raf);
+      if (ta && document.activeElement !== ta && tries < 8) {
+        tries++;
+        window.setTimeout(tryFocus, 50);
+      }
+    };
+    tryFocus();
+    return () => {
+      cancelled = true;
+    };
   }, [isActive, rect]);
 
   return (
@@ -766,7 +798,16 @@ function TerminalViewInner({ tab, rect }: { tab: TerminalTab; rect: Rect | null 
           if (!term) return;
           const sel = term.getSelection();
           if (sel) {
-            void navigator.clipboard.writeText(sel);
+            // 先聚焦再复制：document 未聚焦时 clipboard.writeText 会抛
+            // NotAllowedError（Electron 关闭原生对话框后焦点可能未恢复）
+            try {
+              term.focus();
+            } catch {
+              // 忽略
+            }
+            void navigator.clipboard.writeText(sel).catch(() => {
+              // 剪贴板写入失败（document 未聚焦/权限）静默：选中文本保留，用户可手动 Ctrl+C
+            });
             term.clearSelection();
             pushToast({ hostName: tab.hostName, kind: 'success', text: `已复制选中文本（${sel.length} 字符）` });
             return;
