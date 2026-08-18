@@ -454,7 +454,7 @@ interface AppState {
   setTerminalTheme: (t: string) => void;
   setMcpUrl: (u: string) => void;
   setAppVersion: (v: string) => void;
-  /** 工作区持久化：布局/tab 存 localStorage（刷新后恢复，配合 tmux 恢复会话现场） */
+  /** 工作区持久化：布局/tab 存 localStorage（刷新后恢复，配合服务端断线会话保留恢复现场） */
   saveWorkspace: () => void;
   restoreWorkspace: () => void;
 }
@@ -1030,10 +1030,11 @@ export const useStore = create<AppState>((set, get) => ({
   setAppVersion: (appVersion) => set({ appVersion }),
 
   saveWorkspace: () => {
-    const { tabs, hostLayouts } = get();
-    // 仅持久化 web 终端（agent 会话由 MCP 管理，不恢复）
+    const { tabs } = get();
+    // 仅持久化 web 终端（agent 会话由 MCP 管理，不恢复）；
+    // 动态终端（插件连接，负 hostId）凭据/令牌不落盘，服务端重启后无法恢复，也不持久化
     const webTabs = tabs
-      .filter((t) => t.kind === 'web')
+      .filter((t) => t.kind === 'web' && t.hostId >= 0)
       .map((t) => ({
         id: t.id,
         kind: 'web' as const,
@@ -1043,6 +1044,9 @@ export const useStore = create<AppState>((set, get) => ({
         streamId: null,
         status: 'connecting' as const,
       }));
+    const hostLayouts = Object.fromEntries(
+      Object.entries(get().hostLayouts).filter(([k]) => Number(k) >= 0),
+    );
     const activeOuterId = get().activeOuterId;
     const outerHost =
       get().outerTabs.find((t): t is Extract<OuterTab, { kind: 'host' }> => t.kind === 'host' && t.id === activeOuterId)?.hostId ?? null;
@@ -1083,6 +1087,8 @@ export const useStore = create<AppState>((set, get) => ({
       const ids = new Set((saved.tabs ?? []).map((t) => t.id));
       const hostLayouts: Record<string, LayoutNode> = {};
       for (const [hostId, layout] of Object.entries(saved.hostLayouts)) {
+        // 动态终端（负 hostId）不恢复：服务端重启后无凭据缓存，恢复必然报「主机不存在」
+        if (Number(hostId) < 0) continue;
         let cleaned: LayoutNode | null = layout;
         for (const leaf of collectLeaves(layout)) {
           if (!ids.has(leaf)) cleaned = removeTabFromLayout(cleaned, leaf);

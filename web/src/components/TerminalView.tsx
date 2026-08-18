@@ -6,6 +6,7 @@ import '@xterm/xterm/css/xterm.css';
 import { THEMES } from '../themes';
 import ReplayOverlay from './ReplayOverlay';
 import { api } from '../api';
+import { getDesktop } from '../desktop';
 import { ws, type ClientMsg } from '../ws';
 import { useStore, type Rect, type TerminalTab } from '../store';
 
@@ -330,6 +331,18 @@ function TerminalViewInner({ tab, rect }: { tab: TerminalTab; rect: Rect | null 
     };
     container.addEventListener('wheel', onWheel, { passive: false });
 
+    // Ctrl+Shift+K（VSCode 终端风格）：前端清屏——清除视口与历史缓冲，不发送给 shell。
+    // journalctl -f 等持续输出场景：清掉旧内容避免 scrollback 累积导致渲染卡顿；
+    // 在 DOM 层处理以区分 shift（传统字节流中 Ctrl+Shift+K 与 Ctrl+K 同为 \x0b，
+    // 若在 onData 拦截会破坏 bash 的 Ctrl+K 剪切到行尾）
+    term.attachCustomKeyEventHandler((e) => {
+      if (e.type === 'keydown' && e.ctrlKey && e.shiftKey && e.key.toLowerCase() === 'k') {
+        term.clear();
+        return false;
+      }
+      return true;
+    });
+
     /** 容器尺寸是否可 fit：隐藏（display:none → 0）或布局未就绪时跳过，
      *  避免把 xterm 缩到 10×6 并发送假 terminal:resize（SIGWINCH 导致 shell 重排） */
     const canFit = (el: HTMLElement): boolean => el.clientWidth >= 100 && el.clientHeight >= 50;
@@ -571,7 +584,7 @@ function TerminalViewInner({ tab, rect }: { tab: TerminalTab; rect: Rect | null 
       window.clearTimeout(badgeTimerRef.current);
       badgeTimerRef.current = window.setTimeout(() => setConnBadge(null), 2000);
       // 尺寸对齐：open 可能发生在容器未布局时（默认 80x24），ready 后按实际尺寸重发一次，
-      // 让 shell/tmux 收到 SIGWINCH 重绘（修复「$ 下一行」/首屏显示错乱）
+      // 让 shell 收到 SIGWINCH 重绘（修复「$ 下一行」/首屏显示错乱）
       window.setTimeout(() => {
         if (streamIdRef.current !== e.streamId) return;
         const term = termRef.current;
@@ -639,6 +652,16 @@ function TerminalViewInner({ tab, rect }: { tab: TerminalTab; rect: Rect | null 
                       ? '命令完成，但有警告输出'
                       : '命令执行成功',
               });
+              // 桌面端：非活动终端命令完成 → 系统通知（窗口后台也能感知）
+              getDesktop()?.notify({
+                title: `命令完成 · ${tab.hostName}`,
+                body:
+                  status === 'error'
+                    ? `命令失败（exit ${e.exitCode ?? '?'}）`
+                    : status === 'warning'
+                      ? '命令完成，但有警告输出'
+                      : '命令执行成功',
+              });
             }
           }
         })
@@ -671,15 +694,9 @@ function TerminalViewInner({ tab, rect }: { tab: TerminalTab; rect: Rect | null 
       shouldReconnectRef.current = false;
       closeCompletion();
       if (streamIdRef.current) {
-        const unloading = (window as unknown as { __taUnloading?: boolean }).__taUnloading;
-        // tab 仍存在 = 布局移动（拖拽分屏/合并）等非关闭操作：不销毁 tmux，重挂后 attach 恢复现场；
-        // tab 已移除 = 用户主动关闭：销毁 tmux 持久会话
-        const stillExists = useStore.getState().tabs.some((t) => t.id === tab.id);
-        ws.send({
-          type: 'terminal:close',
-          streamId: streamIdRef.current,
-          ...(tab.kind === 'web' && !unloading && !stillExists ? { tmuxId: tab.id } : {}),
-        });
+        // tab 仍存在 = 布局移动（拖拽分屏/合并）等非关闭操作：TerminalView 由内容池按 tab id
+        // 保持挂载，此处仅在真正卸载时触发（closeTab/登出）；服务端按 kind=open 断开对应会话
+        ws.send({ type: 'terminal:close', streamId: streamIdRef.current });
       }
       term.dispose();
       termRef.current = null;
@@ -840,14 +857,23 @@ function TerminalViewInner({ tab, rect }: { tab: TerminalTab; rect: Rect | null 
           {connBadge.text}
         </div>
       )}
-      {/* 回放入口（hover 显示） */}
-      <button
-        title="回放本次会话"
-        onClick={() => setReplayOpen(true)}
-        className="absolute top-1 left-1 z-30 hidden rounded-sm border border-[#3c3c3c] bg-[#252526]/90 px-1.5 py-0.5 text-[10px] text-[#858585] hover:text-white group-hover:block"
-      >
-        ⏵ 回放
-      </button>
+      {/* 回放/清屏入口（hover 显示） */}
+      <div className="absolute top-1 left-1 z-30 hidden gap-1 group-hover:flex">
+        <button
+          title="回放本次会话"
+          onClick={() => setReplayOpen(true)}
+          className="rounded-sm border border-[#3c3c3c] bg-[#252526]/90 px-1.5 py-0.5 text-[10px] text-[#858585] hover:text-white"
+        >
+          ⏵ 回放
+        </button>
+        <button
+          title="清屏（Ctrl+Shift+K）：清除视口与历史缓冲，不发送命令给 shell"
+          onClick={() => termRef.current?.clear()}
+          className="rounded-sm border border-[#3c3c3c] bg-[#252526]/90 px-1.5 py-0.5 text-[10px] text-[#858585] hover:text-white"
+        >
+          ␡ 清屏
+        </button>
+      </div>
       {/* 搜索浮层 */}
       {searchOpen && (
         <div className="absolute top-1 right-1 z-50 flex items-center gap-1 rounded-sm border border-[#3c3c3c] bg-[#252526] px-1.5 py-1 shadow-2xl">

@@ -6,6 +6,20 @@ import { getDesktop } from './desktop';
  * 均写入 store.transfers 供传输管理器展示。
  */
 
+/** 桌面端任务栏进度：取所有 running 传输的平均进度；无进行中传输时清除 */
+function syncTransferProgress(): void {
+  const d = getDesktop();
+  if (!d) return;
+  const running = useStore.getState().transfers.filter((t) => t.status === 'running' && t.size > 0);
+  if (running.length === 0) {
+    d.setProgress(null);
+    return;
+  }
+  const total = running.reduce((a, t) => a + t.size, 0);
+  const done = running.reduce((a, t) => a + t.transferred, 0);
+  d.setProgress(total > 0 ? done / total : null);
+}
+
 /** 上传单文件（XHR 带进度），自动记录传输状态；onProgress 供调用方 UI 显示百分比 */
 export function uploadFileXHR(
   hostName: string,
@@ -31,11 +45,13 @@ export function uploadFileXHR(
       if (e.lengthComputable) {
         useStore.getState().updateTransfer(id, { transferred: e.loaded });
         onProgress?.(Math.round((e.loaded / e.total) * 100));
+        syncTransferProgress();
       }
     };
     xhr.onload = () => {
       if (xhr.status === 200) {
         useStore.getState().updateTransfer(id, { transferred: f.size, status: 'done', doneAt: Date.now() });
+        syncTransferProgress();
         resolve();
         return;
       }
@@ -46,10 +62,12 @@ export function uploadFileXHR(
         // 保持默认
       }
       useStore.getState().updateTransfer(id, { status: 'error', error: msg });
+      syncTransferProgress();
       reject(new Error(msg));
     };
     xhr.onerror = () => {
       useStore.getState().updateTransfer(id, { status: 'error', error: '网络错误' });
+      syncTransferProgress();
       reject(new Error('网络错误'));
     };
     xhr.send(f);
@@ -72,7 +90,10 @@ export async function downloadWithProgress(
     transferred: 0,
     status: 'running',
   });
-  const update = (p: Partial<TransferRec>): void => useStore.getState().updateTransfer(id, p);
+  const update = (p: Partial<TransferRec>): void => {
+    useStore.getState().updateTransfer(id, p);
+    syncTransferProgress();
+  };
   // 桌面端：浏览器下载完成后记录保存路径（供传输管理器「定位文件」）
   const desktop = getDesktop();
   const unsub = desktop?.onDownloadDone((info) => {

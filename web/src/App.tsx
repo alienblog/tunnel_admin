@@ -241,6 +241,12 @@ function MetricsBar() {
         setHist(null);
         return;
       }
+      // 动态终端（插件连接，负 hostId）：无 hosts 记录，跳过指标采集
+      if (tab.hostId < 0) {
+        st.setMetrics(null);
+        setHist(null);
+        return;
+      }
       try {
         const m = await api<HostMetrics>(`/api/metrics?hostId=${tab.hostId}`);
         st.setMetrics(m);
@@ -449,6 +455,11 @@ export default function App() {
   const setView = useStore((s) => s.setView);
   const sidebarCollapsed = useStore((s) => s.sidebarCollapsed);
   const setSidebarCollapsed = useStore((s) => s.setSidebarCollapsed);
+  // 活动主机名（桌面端窗口标题跟随；null = 无活动终端）
+  const activeTitle = useStore((s) => {
+    const t = s.tabs.find((x) => x.id === s.activeTabId);
+    return t ? t.hostName : null;
+  });
   const [checking, setChecking] = useState(true);
 
   useEffect(() => {
@@ -505,6 +516,14 @@ export default function App() {
         status: 'pending',
         createdAt: new Date().toISOString(),
       });
+      // 桌面端：窗口不在前台也能收到审批请求（60s 超时自动拒绝，需及时响应）
+      getDesktop()?.notify({
+        title: e.kind === 'connect' ? '连接审批请求' : '危险命令审批请求',
+        body:
+          e.kind === 'connect'
+            ? `${e.hostName}（${e.host}:${e.port}）请求建立 SSH 连接`
+            : `${e.hostName} 请求执行命令：${(e.command ?? '').slice(0, 80)}`,
+      });
     });
     const offApprovalResolved = ws.on('approval:resolved', (e) => {
       useStore.getState().removeApproval(e.approvalId);
@@ -532,25 +551,23 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    // 页面卸载标记：刷新/关闭时不销毁 tmux 持久会话
-    const markUnloading = (): void => {
-      (window as unknown as { __taUnloading?: boolean }).__taUnloading = true;
-    };
-    window.addEventListener('beforeunload', markUnloading);
-    window.addEventListener('pagehide', markUnloading);
+    // 工作区变化自动持久化（防抖 300ms：合并连续变更，避免每次 store 更新都序列化写 localStorage；
+    // 延迟执行同时避免加载流程中空状态覆盖已保存数据）
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const unsub = useStore.subscribe(() => {
+      if (timer) clearTimeout(timer);
+      timer = setTimeout(() => useStore.getState().saveWorkspace(), 300);
+    });
     return () => {
-      window.removeEventListener('beforeunload', markUnloading);
-      window.removeEventListener('pagehide', markUnloading);
+      unsub();
+      if (timer) clearTimeout(timer);
     };
   }, []);
 
+  // 桌面端窗口标题跟随活动主机（浏览器环境无操作）
   useEffect(() => {
-    // 工作区变化自动持久化（延迟一帧：避免加载流程中空状态覆盖已保存数据）
-    const unsub = useStore.subscribe((s) => {
-      setTimeout(() => s.saveWorkspace(), 0);
-    });
-    return unsub;
-  }, []);
+    getDesktop()?.setTitle(activeTitle ?? '');
+  }, [activeTitle]);
 
   if (checking) {
     return <div className="flex h-screen items-center justify-center bg-[#1e1e1e] text-[#858585]">加载中…</div>;

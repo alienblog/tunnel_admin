@@ -36,6 +36,12 @@ export interface TaDesktop {
   downloadEnd: (token: string) => Promise<void>;
   /** 取消下载并删除半成品文件 */
   downloadCancel: (token: string) => Promise<void>;
+  /** 窗口标题（显示活动主机名；空串回退默认标题） */
+  setTitle: (title: string) => void;
+  /** 系统通知 + 窗口闪烁（审批请求/命令完成等） */
+  notify: (opts: { title: string; body: string }) => void;
+  /** 任务栏进度条：0..1 进度；null 清除 */
+  setProgress: (value: number | null) => void;
 }
 
 export function getDesktop(): TaDesktop | null {
