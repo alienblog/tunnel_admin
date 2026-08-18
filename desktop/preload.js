@@ -21,4 +21,10 @@ contextBridge.exposeInMainWorld('taDesktop', {
   downloadData: (token, data) => ipcRenderer.invoke('ta:download-data', token, data),
   downloadEnd: (token) => ipcRenderer.invoke('ta:download-end', token),
   downloadCancel: (token) => ipcRenderer.invoke('ta:download-cancel', token),
+  /** 窗口标题（显示活动主机名；空串回退默认标题） */
+  setTitle: (title) => ipcRenderer.send('ta:set-title', title),
+  /** 系统通知 + 窗口闪烁（审批请求/命令完成等） */
+  notify: (opts) => ipcRenderer.send('ta:notify', opts),
+  /** 任务栏进度条：0..1 进度；null 清除 */
+  setProgress: (value) => ipcRenderer.send('ta:progress', value),
 });

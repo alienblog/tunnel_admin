@@ -48,10 +48,17 @@ async function launchServer({ serverEntry, dataDir, nodeExec, port = 8080 }) {
       TUNNELADMIN_DATA_DIR: dataDir,
       // 桌面客户端免 Web 登录（本地单用户）；MCP 仍走 token 鉴权
       TUNNELADMIN_AUTH: 'none',
+      // 只监听本机回环：免登录模式下若监听 0.0.0.0，局域网内任何设备都可免密访问全部 SSH 凭据
+      TUNNELADMIN_HOST: '127.0.0.1',
     },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
-  child.stdout.on('data', (d) => process.stdout.write(`[server] ${d}`));
+  // 快速就绪信号：server 日志出现 listening 即视为就绪（HTTP 轮询探测作为兜底）
+  let readyByLog = false;
+  child.stdout.on('data', (d) => {
+    process.stdout.write(`[server] ${d}`);
+    if (!readyByLog && String(d).includes('listening')) readyByLog = true;
+  });
   child.stderr.on('data', (d) => process.stderr.write(`[server] ${d}`));
 
   // 等待就绪（最长 30s）
@@ -60,12 +67,12 @@ async function launchServer({ serverEntry, dataDir, nodeExec, port = 8080 }) {
     if (child.exitCode !== null) {
       throw new Error(`server 子进程退出（code ${child.exitCode}）`);
     }
-    if (await probePort(actualPort)) break;
+    if (readyByLog || (await probePort(actualPort))) break;
     if (Date.now() > deadline) {
       child.kill();
       throw new Error('server 启动超时');
     }
-    await new Promise((r) => setTimeout(r, 300));
+    await new Promise((r) => setTimeout(r, 200));
   }
   return { child, port: actualPort };
 }
