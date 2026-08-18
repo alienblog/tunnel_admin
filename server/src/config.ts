@@ -1,4 +1,4 @@
-import { randomBytes, createHash, createHmac, timingSafeEqual } from 'node:crypto';
+import { randomBytes, createHash, createHmac, scryptSync, timingSafeEqual } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -28,13 +28,26 @@ export interface Config {
   mcpOutputLimit: number;
 }
 
+/**
+ * scrypt 密码哈希（格式 s2:salt:hash）。
+ * 旧版为无前缀的 SHA-256(salt||pwd)（见 verifyPassword 兼容分支），登录成功后自动升级。
+ */
 export function hashPassword(pwd: string): string {
   const salt = randomBytes(16);
-  const hash = createHash('sha256').update(salt).update(pwd, 'utf8').digest();
-  return `${salt.toString('hex')}:${hash.toString('hex')}`;
+  const hash = scryptSync(pwd, salt, 32) as Buffer;
+  return `s2:${salt.toString('hex')}:${hash.toString('hex')}`;
 }
 
 export function verifyPassword(pwd: string, stored: string): boolean {
+  if (stored.startsWith('s2:')) {
+    const [, saltHex, hashHex] = stored.split(':');
+    if (!saltHex || !hashHex) return false;
+    const salt = Buffer.from(saltHex, 'hex');
+    const expected = Buffer.from(hashHex, 'hex');
+    const actual = scryptSync(pwd, salt, expected.length) as Buffer;
+    return actual.length === expected.length && timingSafeEqual(actual, expected);
+  }
+  // 旧版 SHA-256 格式（无前缀），向后兼容旧密码文件
   const [saltHex, hashHex] = stored.split(':');
   if (!saltHex || !hashHex) return false;
   const salt = Buffer.from(saltHex, 'hex');
@@ -106,13 +119,15 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
   };
 }
 
-// ---- 无状态签名 cookie ----
+// ---- 无状态签名 cookie（载荷含过期时间戳，HMAC 防篡改） ----
 
 const SESSION_PAYLOAD = 'auth=1';
+const SESSION_TTL_MS = 30 * 24 * 60 * 60 * 1000;
 
 export function signSession(secret: string): string {
-  const sig = createHmac('sha256', secret).update(SESSION_PAYLOAD).digest('base64url');
-  return `${SESSION_PAYLOAD}.${sig}`;
+  const payload = `${SESSION_PAYLOAD}.${Date.now() + SESSION_TTL_MS}`;
+  const sig = createHmac('sha256', secret).update(payload).digest('base64url');
+  return `${payload}.${sig}`;
 }
 
 export function verifySession(secret: string, cookie: string | undefined): boolean {
@@ -121,7 +136,11 @@ export function verifySession(secret: string, cookie: string | undefined): boole
   if (idx <= 0) return false;
   const payload = cookie.slice(0, idx);
   const sig = cookie.slice(idx + 1);
-  if (payload !== SESSION_PAYLOAD) return false;
+  const dot = payload.lastIndexOf('.');
+  if (dot <= 0) return false;
+  const body = payload.slice(0, dot);
+  const exp = Number(payload.slice(dot + 1));
+  if (body !== SESSION_PAYLOAD || !Number.isFinite(exp) || exp < Date.now()) return false;
   const expect = createHmac('sha256', secret).update(payload).digest('base64url');
   const a = Buffer.from(sig);
   const b = Buffer.from(expect);

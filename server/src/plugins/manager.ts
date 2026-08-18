@@ -283,11 +283,9 @@ export class PluginManager {
           continue;
         }
         if (cur) this.disposePlugin(cur); // 强制重载：先清理旧实例（定时器/路由/存储句柄）
-        const ok = await this.loadPlugin(id, dir, source);
-        if (!ok && cur) {
-          // 重载失败：保留旧实例（已 dispose，仅保留错误信息展示）
-          this.loaded.set(id, cur);
-        }
+        // loadPlugin 内部维护 loaded 状态：成功=新实例，失败=errorInfo（含错误信息）。
+        // 不能用已 dispose 的旧实例覆盖错误态，否则管理页看不到报错、半死实例仍显示为可用
+        await this.loadPlugin(id, dir, source);
       }
     } finally {
       this.loading = false;

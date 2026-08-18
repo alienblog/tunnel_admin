@@ -1,6 +1,6 @@
 import crypto from 'node:crypto';
 import { z } from 'zod';
-import type { SFTPWrapper, Stats } from 'ssh2';
+import type { SFTPWrapper, Stats, ClientChannel } from 'ssh2';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type Database from 'better-sqlite3';
 import type { Config } from '../config.js';
@@ -50,6 +50,8 @@ interface ForwardRec {
   bindPort: number;
   remoteHost: string;
   remotePort: number;
+  /** 本转发挂载的 'tcp connection' 监听器（停止转发时移除，防泄漏） */
+  stopListener?: (info: { destPort?: number }, accept: () => ClientChannel, reject: () => void) => void;
 }
 const mcpForwards = new Map<string, ForwardRec>();
 let forwardSeq = 0;
@@ -173,11 +175,36 @@ export function registerTools(server: McpServer, deps: McpDeps): void {
         let stdout = '';
         let stderr = '';
         let timedOut = false;
+        let settled = false;
+        let timer: ReturnType<typeof setTimeout> | undefined;
         const limit = config.mcpOutputLimit;
         const append = (buf: Buffer, target: () => string, sink: (s: string) => void): void => {
           if (target().length >= limit) return;
           sink(buf.toString('utf8').slice(0, limit - target().length));
         };
+        // 结算守卫：channel close / 连接断开 / 超时三者只结算一次。
+        // SSH 断连时 channel 可能收不到 close（事件顺序不可靠），
+        // 此处监听 client 级 close/error 兜底，避免命令 promise 永久挂起
+        const finish = (r: ExecResult): void => {
+          if (settled) return;
+          settled = true;
+          if (timer) clearTimeout(timer);
+          session.client.removeListener('close', onConnLost);
+          session.client.removeListener('error', onConnLost);
+          resolve(r);
+        };
+        const onConnLost = (): void => {
+          finish({
+            stdout,
+            stderr: stderr !== '' ? stderr : 'SSH 连接已断开，命令结果不完整',
+            exitCode: -1,
+            timedOut: false,
+            durationMs: Date.now() - t0,
+          });
+        };
+        session.client.once('close', onConnLost);
+        session.client.once('error', onConnLost);
+
         channel.on('data', (d: Buffer) => {
           append(d, () => stdout, (s) => (stdout += s));
           // agent 命令活动实时镜像到 Web 端会话视图
@@ -186,13 +213,12 @@ export function registerTools(server: McpServer, deps: McpDeps): void {
         channel.stderr.on('data', (d: Buffer) => append(d, () => stderr, (s) => (stderr += s)));
         channel.on('error', () => channel.close());
 
-        const timer = setTimeout(() => {
+        timer = setTimeout(() => {
           timedOut = true;
           channel.close();
         }, opts.timeoutMs);
 
         channel.on('close', (code: number | null, signal?: string) => {
-          clearTimeout(timer);
           if (opts.cwd !== undefined) sessionStates.set(session.id, { cwd: opts.cwd });
           const exitCode = code ?? -1;
           // 完成状态：失败（非 0 / 超时）/ 警告（成功但 stderr 有输出）/ 成功
@@ -209,7 +235,7 @@ export function registerTools(server: McpServer, deps: McpDeps): void {
             exitCode,
             status,
           });
-          resolve({
+          finish({
             stdout,
             stderr,
             exitCode,
@@ -595,6 +621,19 @@ export function registerTools(server: McpServer, deps: McpDeps): void {
       const jobId = `tail-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
       const job: StreamJob = { status: 'running', chunks: [], next: 0, channel: null };
       streamJobs.set(jobId, job);
+      // 上限防泄漏：agent 忘调 ssh_tail_stop 时回收最旧的跟踪任务
+      if (streamJobs.size > 50) {
+        const oldest = streamJobs.keys().next().value;
+        if (oldest) {
+          const j = streamJobs.get(oldest);
+          try {
+            j?.channel?.close();
+          } catch {
+            // 已关闭
+          }
+          streamJobs.delete(oldest);
+        }
+      }
       s.client.exec(`tail -f -n 0 -- ${shellQuote(params.path)}`, (err, channel) => {
         if (err) {
           job.status = 'done';
@@ -677,7 +716,10 @@ export function registerTools(server: McpServer, deps: McpDeps): void {
         remoteHost: params.remoteHost,
         remotePort: params.remotePort,
       };
-      s.client.on('tcp connection', (_info, accept, reject) => {
+      // 同一会话可建多个转发：每个转发只处理 destPort 匹配的连接（info.destPort 过滤），
+      // 避免多个监听器对同一次连接争抢 accept() 导致转发错乱
+      const onTcpConnection = (info: { destPort?: number }, accept: () => ClientChannel, reject: () => void): void => {
+        if (info.destPort !== rec.bindPort) return;
         s.client.forwardOut('127.0.0.1', 0, rec.remoteHost, rec.remotePort, (err, stream) => {
           if (err) return reject();
           const conn = accept();
@@ -685,11 +727,13 @@ export function registerTools(server: McpServer, deps: McpDeps): void {
           conn.on('error', () => stream.destroy());
           stream.on('error', () => conn.destroy());
         });
-      });
+      };
+      s.client.on('tcp connection', onTcpConnection);
       s.client.on('close', () => {
+        s.client.removeListener('tcp connection', onTcpConnection);
         mcpForwards.delete(rec.id);
       });
-      mcpForwards.set(rec.id, rec);
+      mcpForwards.set(rec.id, { ...rec, stopListener: onTcpConnection });
       return text({ ok: true, forwardId: rec.id, bindPort: rec.bindPort, access: `127.0.0.1:${rec.bindPort}` });
     },
   );
@@ -725,6 +769,8 @@ export function registerTools(server: McpServer, deps: McpDeps): void {
         } catch {
           // 忽略
         }
+        // 移除本转发挂载的监听器（否则端口已取消但监听器残留引用已删记录）
+        if (rec.stopListener) s.client.removeListener('tcp connection', rec.stopListener);
       }
       mcpForwards.delete(forwardId);
       return text({ ok: true, forwardId });

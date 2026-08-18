@@ -1,7 +1,7 @@
 import type { FastifyInstance } from 'fastify';
 import type Database from 'better-sqlite3';
 import type { Config } from '../config.js';
-import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
 import { encryptText } from '../crypto.js';
 import { requireAuth } from './auth.js';
 
@@ -50,11 +50,4 @@ export function registerTokens(app: FastifyInstance, config: Config, db: Databas
     db.prepare('DELETE FROM mcp_tokens WHERE id = ?').run(id);
     return { ok: true };
   });
-}
-
-/** 恒定时间比较，防时序侧信道 */
-export function safeEqual(a: string, b: string): boolean {
-  const ba = Buffer.from(a);
-  const bb = Buffer.from(b);
-  return ba.length === bb.length && timingSafeEqual(ba, bb);
 }

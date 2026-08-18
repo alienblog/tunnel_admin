@@ -4,6 +4,7 @@ import type { FastifyInstance } from 'fastify';
 import type { HostCreds, SshManager, SshSession } from './ssh/manager.js';
 import type { HostRow } from './db.js';
 import { takeConnect, type DynamicConnectInfo } from './plugins/connectQueue.js';
+import { getDynamicDevice, setDynamicDevice } from './dynamicDevices.js';
 import { eventBus } from './events.js';
 import { isAuthed } from './routes/auth.js';
 import type { Config } from './config.js';
@@ -20,7 +21,7 @@ type ClientMsg =
   | { type: 'terminal:attach'; reqId: string; sessionId: string; cols: number; rows: number }
   | { type: 'terminal:input'; streamId: string; data: string }
   | { type: 'terminal:resize'; streamId: string; cols: number; rows: number }
-  | { type: 'terminal:close'; streamId: string; tmuxId?: string };
+  | { type: 'terminal:close'; streamId: string };
 
 /** 动态设备（插件 ctx.ssh.requestConnect）→ 临时 HostRow + 明文凭据覆盖 */
 function dynamicToHost(info: DynamicConnectInfo): { host: HostRow; creds: HostCreds } {
@@ -68,10 +69,7 @@ export function registerWs(app: FastifyInstance, config: Config, manager: SshMan
    * 超时（DETACH_TTL）未重连则回收。
    */
   const detached = new Map<string, { session: SshSession; channel: Channel; timer: ReturnType<typeof setTimeout> }>();
-  /** 动态设备（插件）凭据缓存：hostId → 凭据，供同主机多开终端（加号）复用；TTL 过期清除 */
-  const dynamicCreds = new Map<number, { host: HostRow; creds: HostCreds | undefined; timer: ReturnType<typeof setTimeout> }>();
   const DETACH_TTL_MS = 5 * 60 * 1000;
-  const DYNAMIC_CRED_TTL_MS = 10 * 60 * 1000;
 
   function detachChannel(tmuxId: string, rec: StreamRec): void {
     const prev = detached.get(tmuxId);
@@ -206,7 +204,7 @@ export function registerWs(app: FastifyInstance, config: Config, manager: SshMan
             }
           }
           // 动态连接（插件 ta.ssh.connect）：凭据由插件后端登记的一次性令牌承载；
-          // 令牌消费后（重连/同主机多开）走 dynamicCreds 缓存；
+          // 令牌消费后（重连/同主机多开/SFTP 等 HTTP 层）走 dynamicDevices 共享缓存；
           // 常规连接：按 hosts 表 id
           let host: HostRow;
           let creds: HostCreds | undefined;
@@ -215,10 +213,12 @@ export function registerWs(app: FastifyInstance, config: Config, manager: SshMan
             if (!info)
               return send({ type: 'terminal:error', reqId: msg.reqId, message: '连接令牌无效或已过期，请重新点击连接' });
             ({ host, creds } = dynamicToHost(info));
-          } else if (msg.hostId < 0 && dynamicCreds.has(msg.hostId)) {
-            const dc = dynamicCreds.get(msg.hostId)!;
-            host = dc.host;
-            creds = dc.creds;
+          } else if (msg.hostId < 0) {
+            const dyn = getDynamicDevice(msg.hostId);
+            if (!dyn)
+              return send({ type: 'terminal:error', reqId: msg.reqId, message: '动态设备凭据已过期，请重新点击连接' });
+            host = dyn.host;
+            creds = dyn.creds;
           } else {
             const h = manager.getHostRow(msg.hostId);
             if (!h) return send({ type: 'terminal:error', reqId: msg.reqId, message: '主机不存在' });
@@ -231,14 +231,9 @@ export function registerWs(app: FastifyInstance, config: Config, manager: SshMan
             const rec: StreamRec = { id: crypto.randomUUID(), session, channel, kind: 'open', tmuxId: msg.tmuxId };
             wireStream(rec);
             send({ type: 'terminal:ready', reqId: msg.reqId, streamId: rec.id, sessionId: session.id });
-            // 动态设备凭据缓存：同主机多开（组内加号）与重连复用；TTL 过期清除
+            // 动态设备登记共享缓存：终端多开（组内加号）/重连/SFTP/补全/编辑器复用；TTL 过期清除
             if (msg.connectToken && msg.hostId < 0) {
-              const prev = dynamicCreds.get(msg.hostId);
-              if (prev) clearTimeout(prev.timer);
-              const timer = setTimeout(() => {
-                dynamicCreds.delete(msg.hostId);
-              }, DYNAMIC_CRED_TTL_MS);
-              dynamicCreds.set(msg.hostId, { host, creds, timer });
+              setDynamicDevice(msg.hostId, host, creds);
             }
           } catch (err) {
             send({ type: 'terminal:error', reqId: msg.reqId, message: `连接失败: ${(err as Error).message}` });
@@ -287,13 +282,6 @@ export function registerWs(app: FastifyInstance, config: Config, manager: SshMan
               rec.channel.end();
             } catch {
               // 已关闭
-            }
-            // 主动关闭：销毁对应的 tmux 持久会话（被动断连则保留）
-            if (msg.tmuxId) {
-              const tmuxName = `ta-${msg.tmuxId.replace(/[^a-zA-Z0-9_-]/g, '')}`;
-              rec.session.client.exec(`tmux kill-session -t ${tmuxName} 2>/dev/null`, () => {
-                // 忽略销毁结果
-              });
             }
             if (rec.kind === 'open') manager.disconnect(rec.session.id);
           }

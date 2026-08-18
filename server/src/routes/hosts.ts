@@ -70,6 +70,9 @@ export function registerHosts(app: FastifyInstance, config: Config, db: Database
     const input = req.body as HostInput;
     const err = validateHost(input);
     if (err) return reply.code(400).send({ error: err });
+    // 必填校验（避免 undefined 绑定直接 500）
+    if (!input.host || !input.host.trim()) return reply.code(400).send({ error: '请填写主机地址' });
+    if (!input.username || !input.username.trim()) return reply.code(400).send({ error: '请填写用户名' });
 
     const authType = input.auth_type ?? 'password';
     // 引用凭据时无需内联密码/私钥

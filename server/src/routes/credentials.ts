@@ -122,9 +122,9 @@ export function registerCredentials(app: FastifyInstance, config: Config, db: Da
   app.delete('/api/credentials/:id', async (req, reply) => {
     if (!requireAuth(req, reply, config)) return;
     const id = Number((req.params as { id: string }).id);
-    // 引用该凭据的主机解除引用（回退为内联凭据）
-    db.prepare('UPDATE hosts SET credential_id = NULL WHERE credential_id = ?').run(id);
+    // 引用该凭据的主机解除引用：主机若无内联凭据，删除后需重新配置凭据才能连接
+    const detach = db.prepare('UPDATE hosts SET credential_id = NULL WHERE credential_id = ?').run(id);
     db.prepare('DELETE FROM credentials WHERE id = ?').run(id);
-    return { ok: true };
+    return { ok: true, detachedHosts: detach.changes };
   });
 }

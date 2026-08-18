@@ -123,9 +123,7 @@ export function registerComplete(app: FastifyInstance, config: Config, sessions:
       // 通过 bash-completion 的补全函数取候选；无结果时降级到下方 kind 逻辑
       if (q.line && q.line.trim() !== '') {
         const bashCmd = BASH_COMPLETE_SCRIPT(q.line, cwd);
-        console.error('[complete] cmd:', bashCmd.replace(/\n/g, ' ').slice(0, 200));
         const r = await execCapture(handle.session, bashCmd, 5000);
-        console.error('[complete] out:', JSON.stringify(r.stdout.slice(0, 120)), 'err:', JSON.stringify(r.stderr.slice(0, 120)));
         const seen = new Set<string>();
         const items: CompleteItem[] = r.stdout
           .split('\n')

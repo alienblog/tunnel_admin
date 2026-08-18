@@ -147,7 +147,6 @@ export class SshManager {
       client.on('error', () => this.disconnect(session.id));
       client.on('close', () => this.disconnect(session.id));
       this.sessions.set(session.id, session);
-      this.touchHost(session);
       this.broadcastSessions();
       return session;
     } catch (err) {
@@ -276,7 +275,6 @@ export class SshManager {
     const s = this.sessions.get(id);
     if (s) {
       s.lastUsedAt = Date.now();
-      this.touchHost(s);
     }
     return s;
   }
@@ -316,9 +314,5 @@ export class SshManager {
 
   closeAll(): void {
     for (const id of [...this.sessions.keys()]) this.disconnect(id);
-  }
-
-  private touchHost(s: SshSession): void {
-    this.db.prepare('UPDATE sessions SET last_used_at = datetime(\'now\') WHERE id = ?').run(s.id);
   }
 }

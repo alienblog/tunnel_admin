@@ -21,6 +21,11 @@ export function requireAuth(req: FastifyRequest, reply: FastifyReply, config: Co
   return false;
 }
 
+// 登录失败限流（内存，按 IP：10 次/5 分钟，防暴力破解）
+const MAX_LOGIN_FAILS = 10;
+const LOGIN_WINDOW_MS = 5 * 60 * 1000;
+const loginFails = new Map<string, { count: number; resetAt: number }>();
+
 export function registerAuth(app: FastifyInstance, config: Config): void {
   app.post('/api/login', async (req, reply) => {
     // 免登录模式：任意请求直接成功
@@ -33,11 +38,37 @@ export function registerAuth(app: FastifyInstance, config: Config): void {
       });
       return { ok: true };
     }
+
+    // 简单限流：失败次数超限返回 429（窗口过期自动重置）
+    const ip = req.ip ?? 'unknown';
+    const now = Date.now();
+    let rec = loginFails.get(ip);
+    if (!rec || rec.resetAt < now) {
+      rec = { count: 0, resetAt: now + LOGIN_WINDOW_MS };
+      loginFails.set(ip, rec);
+    }
+    if (rec.count >= MAX_LOGIN_FAILS) {
+      return reply.code(429).send({ error: '登录尝试次数过多，请 5 分钟后再试' });
+    }
+
     const body = req.body as { password?: string } | null;
     const password = body?.password ?? '';
     if (!verifyPassword(password, config.passwordHash)) {
+      rec.count += 1;
       return reply.code(401).send({ error: '密码错误' });
     }
+    loginFails.delete(ip);
+
+    // 旧版 SHA-256 哈希验证通过后升级为 scrypt 格式（写入失败不影响登录）
+    if (!config.passwordHash.startsWith('s2:')) {
+      config.passwordHash = hashPassword(password);
+      try {
+        fs.writeFileSync(path.join(config.dataDir, 'password.hash'), config.passwordHash, { mode: 0o600 });
+      } catch (err) {
+        req.log.warn(`密码哈希升级写入失败: ${(err as Error).message}`);
+      }
+    }
+
     reply.setCookie(SESSION_COOKIE, signSession(config.sessionSecret), {
       httpOnly: true,
       sameSite: 'lax',

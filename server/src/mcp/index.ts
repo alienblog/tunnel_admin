@@ -1,4 +1,7 @@
 import type { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
+import fs from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import { registerTools, type McpDeps } from './tools.js';
@@ -10,6 +13,18 @@ export type { McpDeps } from './tools.js';
 export interface McpDepsWithPorts extends McpDeps {
   mcpPorts: McpPortManager;
 }
+
+/** 应用版本：读根 package.json（与 /api/me 一致；避免硬编码版本漂移） */
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const APP_VERSION = (() => {
+  try {
+    const root = path.resolve(__dirname, '../../..');
+    const pkg = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8')) as { version?: string };
+    return pkg.version ?? '';
+  } catch {
+    return '';
+  }
+})();
 
 const MCP_TOOLS: ReadonlyArray<readonly [string, string]> = [
   ['ssh_list_hosts', '列出所有可连接的主机（含 ID、名称、地址、分组、信任状态）'],
@@ -136,7 +151,7 @@ export function registerMcpEndpoint(app: FastifyInstance, deps: McpDeps): void {
       }
       // 无状态模式：每个请求新建 Server + transport（Protocol 单实例只支持单 transport）
       const server = new McpServer(
-        { name: 'tunneladmin', version: '0.2.7' },
+        { name: 'tunneladmin', version: APP_VERSION },
         { capabilities: { tools: {} } },
       );
       registerTools(server, deps);
@@ -155,10 +170,4 @@ export function registerMcpEndpoint(app: FastifyInstance, deps: McpDeps): void {
   app.post('/mcp', handler);
   app.get('/mcp', handler);
   app.delete('/mcp', handler);
-}
-
-/** 兼容旧调用（挂主 app：prompt + endpoint 同端口） */
-export function registerMcp(app: FastifyInstance, deps: McpDepsWithPorts): void {
-  registerMcpPrompt(app, deps);
-  registerMcpEndpoint(app, deps);
 }

@@ -44,8 +44,19 @@ export function registerForward(app: FastifyInstance, config: Config, db: Databa
   app.post('/api/forward', async (req, reply) => {
     if (!requireAuth(req, reply, config)) return;
     const body = req.body as { hostId: number; remoteHost: string; remotePort: number; bindPort: number } | null;
-    if (!body || !body.hostId || !Number.isInteger(body.remotePort) || !Number.isInteger(body.bindPort)) {
-      return reply.code(400).send({ error: '参数不完整' });
+    if (
+      !body ||
+      !body.hostId ||
+      typeof body.remoteHost !== 'string' ||
+      body.remoteHost.trim() === '' ||
+      !Number.isInteger(body.remotePort) ||
+      body.remotePort < 1 ||
+      body.remotePort > 65535 ||
+      !Number.isInteger(body.bindPort) ||
+      body.bindPort < 1 ||
+      body.bindPort > 65535
+    ) {
+      return reply.code(400).send({ error: '参数不完整或非法' });
     }
     const host = manager.getHostRow(body.hostId);
     if (!host) return reply.code(404).send({ error: '主机不存在' });
